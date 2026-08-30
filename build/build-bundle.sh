@@ -35,8 +35,10 @@ mkdir -p "$PKGROOT/var/lib/pacman" "$PKGROOT/var/cache/pacman/pkg" "$BUNDLE/usr"
 # ---------------------------------------------------------------------------
 msg "Resolving binary packages into an alternate root"
 # pacman does the dependency closure for us; -r keeps it out of the build image.
+# --hookdir suppresses post-transaction hooks, which are meaningless against an
+# alternate root with no /dev and only produce noise.
 sudo pacman -r "$PKGROOT" -Sy --noconfirm --dbpath "$PKGROOT/var/lib/pacman" \
-  "${BINARY_PKGS[@]}"
+  --hookdir "$PKGROOT/nonexistent-hooks" "${BINARY_PKGS[@]}"
 
 msg "Pruning packages the Deck already ships"
 # Anything present in SteamOS is a liability to ship: bundling a second copy of
@@ -58,11 +60,14 @@ echo "kept ${#kept[@]} packages, dropped $dropped already on the Deck"
 printf '%s\n' "${kept[@]}" > "$STAGE/bundled-packages.txt"
 
 sudo rm -rf "$PKGROOT/var/lib/pacman" "$PKGROOT/var/cache"
-sudo chown -R "$(id -u):$(id -g)" "$PKGROOT"
-# Keep only what a relocated prefix can actually use.
+# Copy as root: some files are setuid/root-only (dbus-daemon-launch-helper),
+# then hand the whole bundle back so the from-source builds can write into it.
 for d in usr/bin usr/lib usr/share usr/libexec; do
-  [ -d "$PKGROOT/$d" ] && { mkdir -p "$BUNDLE/$(dirname $d)"; cp -a "$PKGROOT/$d" "$BUNDLE/$d"; }
+  [ -d "$PKGROOT/$d" ] && { mkdir -p "$BUNDLE/$(dirname $d)"; sudo cp -a "$PKGROOT/$d" "$BUNDLE/$d"; }
 done
+sudo chown -R "$(id -u):$(id -g)" "$BUNDLE"
+# Nothing in a relocated user-owned bundle may keep setuid bits.
+find "$BUNDLE" -type f -perm /6000 -exec chmod a-s {} +
 
 # ---------------------------------------------------------------------------
 build_git() { # url tag builder...
