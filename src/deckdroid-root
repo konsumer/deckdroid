@@ -36,6 +36,22 @@ umount_work() {
   dd_info "unmounted $DD_WORK"
 }
 
+# waydroid only skips its own (unreliable) downloader when it finds finished
+# images in one of its preinstalled paths. Ours live in the user's directory,
+# which is the only place with room for them, so bind them into place.
+bind_images() {
+  local src=$DECKDROID_ROOT/images
+  [ -f "$src/system.img" ] && [ -f "$src/vendor.img" ] || return 0
+  mountpoint -q /etc/waydroid-extra/images && return 0
+  mkdir -p /etc/waydroid-extra/images
+  mount --bind "$src" /etc/waydroid-extra/images
+}
+
+unbind_images() {
+  mountpoint -q /etc/waydroid-extra/images && umount /etc/waydroid-extra/images
+  return 0
+}
+
 # Android expects far more pids than SteamOS's default allows.
 raise_pid_max() {
   mkdir -p "$DD_STATE"
@@ -55,6 +71,7 @@ case "${1:-}" in
   container-start)
     dd_require_binder
     mount_work
+    bind_images
     raise_pid_max
     # Runs in the foreground; the caller backgrounds it and waits on the socket.
     exec waydroid container start
@@ -62,12 +79,14 @@ case "${1:-}" in
   container-stop)
     waydroid container stop || true
     restore_pid_max
+    unbind_images
     umount_work
     ;;
   init)
     shift
     dd_require_binder
     mount_work
+    bind_images
     exec waydroid init "$@"
     ;;
   status)

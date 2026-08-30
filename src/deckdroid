@@ -63,7 +63,8 @@ cmd_install() {
   if [ "${DECKDROID_SKIP_IMAGES:-0}" = "1" ]; then
     dd_warn "skipping Android image download (--no-images)"
   else
-    dd_info "fetching Android images (this is the large download)"
+    cmd_images
+    dd_info "initialising waydroid"
     as_root init
   fi
 
@@ -82,6 +83,64 @@ cmd_privileged_setup() {
   sudo chmod 0440 "$sudoers"
   sudo cp "$DD_BUNDLE/usr/share/dbus-1/system.d/id.waydro.Container.conf" "$dbus"
   sudo systemctl reload dbus 2>/dev/null || true
+}
+
+
+# --- android images -------------------------------------------------------
+
+# waydroid downloads these itself, but only via sourceforge.net's HTML redirect
+# endpoint, which stalls indefinitely on some networks (it did on the Deck this
+# was developed against, dying silently at 103MB of 838MB). Fetch them here from
+# SourceForge's direct download host instead, with resume and checksums, and
+# hand waydroid finished images so it skips its own downloader entirely.
+ota_pick() { # channel romtype -> "url<TAB>filename<TAB>sha256<TAB>size"
+  curl -fsSL "https://ota.waydro.id/$1/waydroid_x86_64/$2.json" | python3 -c '
+import json, sys
+newest = max(json.load(sys.stdin)["response"], key=lambda r: r["datetime"])
+url = (newest["url"]
+       .replace("//sourceforge.net/projects/", "//downloads.sourceforge.net/project/")
+       .replace("/files/", "/")
+       .removesuffix("/download"))
+print("\t".join([url, newest["filename"], newest["id"], str(newest["size"])]))'
+}
+
+fetch_one() { # url file sha256 size dest.img
+  local url=$1 file=$2 sha=$3 size=$4 out=$5
+  local cache=$DECKDROID_ROOT/images-cache
+  mkdir -p "$cache"
+  if [ ! -f "$cache/$file.ok" ]; then
+    dd_info "downloading $file ($(( size / 1048576 ))MB)"
+    # -C - resumes a partial file; SourceForge mirrors drop connections often.
+    curl -fL --progress-bar -C - --retry 8 --retry-delay 3 --retry-all-errors \
+      --connect-timeout 20 --speed-limit 8192 --speed-time 60 \
+      -o "$cache/$file" "$url" || dd_die "download of $file failed"
+    dd_info "verifying checksum"
+    echo "$sha  $cache/$file" | sha256sum -c - >/dev/null \
+      || { rm -f "$cache/$file"; dd_die "$file failed checksum; re-run to retry"; }
+    touch "$cache/$file.ok"
+  fi
+  dd_info "extracting $(basename "$out")"
+  local tmp; tmp=$(mktemp -d)
+  unzip -qo "$cache/$file" -d "$tmp"
+  local img; img=$(find "$tmp" -name '*.img' -print -quit)
+  [ -n "$img" ] || { rm -rf "$tmp"; dd_die "no .img inside $file"; }
+  mv "$img" "$out"
+  rm -rf "$tmp"
+}
+
+cmd_images() {
+  mkdir -p "$DECKDROID_ROOT/images"
+  if [ -f "$DECKDROID_ROOT/images/system.img" ] && [ -f "$DECKDROID_ROOT/images/vendor.img" ]; then
+    dd_info "android images already present"
+    return 0
+  fi
+  local sys ven
+  sys=$(ota_pick system/lineage VANILLA) || dd_die "could not reach the waydroid OTA server"
+  ven=$(ota_pick vendor MAINLINE) || dd_die "could not reach the waydroid OTA server"
+  # shellcheck disable=SC2086
+  IFS=$'\t' read -r u f h z <<<"$sys"; fetch_one "$u" "$f" "$h" "$z" "$DECKDROID_ROOT/images/system.img"
+  IFS=$'\t' read -r u f h z <<<"$ven"; fetch_one "$u" "$f" "$h" "$z" "$DECKDROID_ROOT/images/vendor.img"
+  dd_info "images ready in $DECKDROID_ROOT/images"
 }
 
 # --- lifecycle -------------------------------------------------------------
@@ -168,6 +227,7 @@ cmd_doctor() {
 
 case "${1:-}" in
   install) shift; cmd_install "$@" ;;
+  images) cmd_images ;;
   start) cmd_start ;;
   stop) cmd_stop ;;
   restart) cmd_stop; cmd_start ;;
@@ -182,6 +242,7 @@ case "${1:-}" in
 deckdroid - Waydroid on the Steam Deck, installed wherever you want
 
   install [--root DIR] [--size 32G]   download and set up
+  images                              (re)fetch the Android images only
   start | stop | restart | status     manage the service
   ui                                  full Android UI
   launch <package>                    run one app, stop when it exits
