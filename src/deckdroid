@@ -237,6 +237,14 @@ cmd_start() {
 }
 
 cmd_stop() {
+  # Clear a compositor left behind by an interrupted launch, so Steam stops
+  # treating the shortcut as running. Only ever our own recorded pid.
+  local stale
+  stale=$(cat "$DECKDROID_ROOT/cage.pid" 2>/dev/null || true)
+  if [ -n "$stale" ] && [ "$stale" != "$$" ] && kill -0 "$stale" 2>/dev/null; then
+    kill "$stale" 2>/dev/null || true
+  fi
+  rm -f "$DECKDROID_ROOT/cage.pid"
   waydroid session stop 2>/dev/null || true
   systemctl --user stop deckdroid-session 2>/dev/null || true
   as_root container-stop
@@ -254,12 +262,22 @@ cmd_status() {
 
 # --- apps ------------------------------------------------------------------
 
-# Internal: the process cage supervises. `waydroid app launch` only fires an
-# intent and returns immediately, so running it as cage's child would close the
-# compositor before the app had drawn anything. Hold the session open for as
-# long as the app actually has a process.
+# Internal: this runs INSIDE cage, which sets WAYLAND_DISPLAY for us.
+#
+# The waydroid session has to be started here rather than outside, because
+# Android's surfaces go to whatever display the *session* was started on. Start
+# it outside and cage ends up supervising a shell script that draws nothing,
+# while Android renders to the outer compositor as a window gamescope will not
+# associate with the Steam shortcut -- a spinning Steam logo and no picture.
 cmd_run_app() {
-  local pkg=$1
+  local pkg=$1 i
+  dd_info "session inside cage on ${WAYLAND_DISPLAY:-unset}"
+  waydroid session start >"$DECKDROID_ROOT/session.log" 2>&1 &
+  for i in $(seq 1 120); do session_running && break; sleep 0.5; done
+  session_running || { dd_warn "session did not start; see $DECKDROID_ROOT/session.log"; return 1; }
+
+  for i in $(seq 1 90); do waydroid app list >/dev/null 2>&1 && break; sleep 2; done
+  dd_info "launching $pkg"
   waydroid app launch "$pkg" || true
   as_root wait-app "$pkg"
 }
@@ -271,33 +289,41 @@ cmd_launch() {
   # be invisible. Keep a copy of everything this run prints.
   exec > >(tee -a "$DECKDROID_ROOT/launch.log") 2>&1
   echo "--- $(date -Is) launch $pkg (display=${WAYLAND_DISPLAY:-unset} gamescope=${GAMESCOPE_WAYLAND_DISPLAY:-unset})"
-  cmd_start
-  # One app per window, rather than the whole Android launcher UI, so a Steam
-  # shortcut opens the game and nothing else.
-  waydroid prop set persist.waydroid.multi_windows true 2>/dev/null || true
-  dd_info "launching $pkg"
-  # Steam kills a shortcut's process when you quit from the overlay, so shut the
-  # service down on a signal too, not only on a clean exit.
-  trap 'cmd_stop; exit 0' INT TERM
-  # cage gives the app its own Wayland compositor, which is what lets a
-  # non-Steam shortcut behave like a normal game in Game Mode.
-  cage -- "$(realpath "$0")" run-app "$pkg" || true
-  # The shortcut's lifetime is the app's: shut down when the window closes so a
-  # backgrounded Android does not eat memory during the next game.
-  if [ "${DECKDROID_KEEP_RUNNING:-0}" != "1" ]; then cmd_stop; fi
-}
 
-# waydroid only writes .desktop files and icons for installed apps when the
-# session's user monitor does its startup pass, so a freshly installed APK has
-# no icon and no Steam entry until the session is restarted.
-cmd_refresh() {
-  session_running || dd_die "not running"
-  dd_info "refreshing app list"
-  systemctl --user restart deckdroid-session
+  dd_require_binder
+  dd_have_bundle || dd_die "not installed; run 'deckdroid install'"
+
+  local display
+  display=$(dd_wayland_display) || dd_die \
+    "no Wayland display found in ${XDG_RUNTIME_DIR:-/run/user/$(id -u)}."
+  export WAYLAND_DISPLAY=$display
+  export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+
+  # Any session started outside cage is bound to the wrong display for this.
+  # The image is not mounted yet, so waydroid will say it is uninitialised;
+  # that is expected here and not worth showing.
+  waydroid session stop >/dev/null 2>&1 || true
+  systemctl --user stop deckdroid-session >/dev/null 2>&1 || true
+
+  dd_info "starting container"
+  as_root container-start || dd_die "container failed to start"
   local i
-  for i in $(seq 1 120); do session_running && break; sleep 0.5; done
-  sleep 10   # give the user monitor time to write desktop files and icons
-  dd_info "done"
+  for i in $(seq 1 60); do waydroid status >/dev/null 2>&1 && break; sleep 0.5; done
+
+  # One app per window rather than the whole Android launcher UI.
+  waydroid prop set persist.waydroid.multi_windows true 2>/dev/null || true
+
+  trap 'cmd_stop; exit 0' INT TERM
+  dd_info "handing off to cage on $display"
+  # Remember the compositor: if a launch is interrupted, a surviving cage makes
+  # Steam believe the shortcut is still running and silently refuse to start it
+  # again, which looks exactly like "nothing happens".
+  cage -- "$(realpath "$0")" run-app "$pkg" &
+  local cage_pid=$!
+  echo "$cage_pid" > "$DECKDROID_ROOT/cage.pid"
+  wait "$cage_pid" || true
+  rm -f "$DECKDROID_ROOT/cage.pid"
+  if [ "${DECKDROID_KEEP_RUNNING:-0}" != "1" ]; then cmd_stop; fi
 }
 
 cmd_app() {
