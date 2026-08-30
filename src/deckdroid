@@ -658,6 +658,30 @@ cmd_kill() {
   cmd_stop
 }
 
+# Make a TV build navigable from a controller. See deckdroid-root keymap for
+# why this is needed at all.
+cmd_keymap() {
+  session_running || dd_die "not running; start it first so the layout can be read"
+  as_root keymap
+  dd_info "restarting the session to pick it up"
+  systemctl --user restart deckdroid-session >/dev/null 2>&1 || true
+  local i
+  for i in $(seq 1 120); do session_running && break; sleep 0.5; done
+  cat <<'MAP'
+
+Now bind these in Steam (per shortcut: Controller icon -> Edit Layout):
+
+  D-pad / left stick  ->  Arrow keys      navigate
+  A                   ->  Enter           select
+  B                   ->  Escape          back
+  Y                   ->  F1              home
+  Select              ->  F2              recent apps
+  Start               ->  F3              menu
+
+Arrows and Enter already work; the rest need this overlay.
+MAP
+}
+
 cmd_doctor() {
   printf 'kernel:    %s\n' "$(uname -r)"
   printf 'steamos:   %s\n' "$(. /etc/os-release; echo "$VERSION_ID")"
@@ -677,6 +701,7 @@ case "${1:-}" in
   install) shift; cmd_install "$@" ;;
   images) shift; cmd_images "$@" ;;
   reinit) shift; cmd_reinit "$@" ;;
+  keymap) cmd_keymap ;;
   start) cmd_start ;;
   stop) cmd_stop ;;
   restart) cmd_stop; cmd_start ;;
@@ -706,6 +731,7 @@ deckdroid - Waydroid on the Steam Deck, installed wherever you want
   app install <apk> | remove | list   manage apps
   refresh                             regenerate app icons and desktop entries
   shortcuts sync                      add a Steam entry per installed app
+  keymap                              make a TV build controller-navigable
   kill                                force-stop a stuck launch
   doctor                              diagnose
 USAGE

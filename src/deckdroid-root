@@ -213,6 +213,28 @@ case "${1:-}" in
     waydroid shell -- dumpsys activity activities 2>/dev/null \
       | grep -a "topResumedActivity" | grep -q "$pkg"
     ;;
+  keymap)
+    # Android maps BACK to Linux key 158 and HOME to 172 -- keys no keyboard
+    # has, so Steam Input cannot send them and a TV build becomes unnavigable
+    # (leanback UIs ignore the mouse by design). Overlay the key layout so
+    # ordinary keys, which Steam Input *can* send, reach those actions.
+    tmp=$(mktemp)
+    waydroid shell -- cat /system/usr/keylayout/Generic.kl > "$tmp" 2>/dev/null
+    [ -s "$tmp" ] || { rm -f "$tmp"; dd_die "could not read Generic.kl (is Android running?)"; }
+    sed -i -e "s/^key 1  *[A-Z_]*/key 1     BACK/" \
+           -e "s/^key 59  *[A-Z_]*/key 59    HOME/" \
+           -e "s/^key 60  *[A-Z_]*/key 60    APP_SWITCH/" \
+           -e "s/^key 61  *[A-Z_]*/key 61    MENU/" "$tmp"
+    for entry in "59 HOME" "60 APP_SWITCH" "61 MENU"; do
+      set -- $entry
+      grep -qE "^key $1 " "$tmp" || printf "key %-5s %s\n" "$1" "$2" >> "$tmp"
+    done
+    dir=$DD_WORK/overlay/system/usr/keylayout
+    mkdir -p "$dir"
+    cp "$tmp" "$dir/Generic.kl"
+    rm -f "$tmp"
+    dd_info "installed key layout overlay: Esc=Back F1=Home F2=Recents F3=Menu"
+    ;;
   kill-helpers)
     # Clear root-side wait loops left by an interrupted launch.
     pkill -f "deckdroid-root wait-app" 2>/dev/null || true
@@ -232,5 +254,5 @@ case "${1:-}" in
     printf 'binder=%s\n' "$(awk '$2=="binder"{f=1} END{print f?"yes":"no"}' /proc/filesystems)"
     printf 'container=%s\n' "$(waydroid status 2>/dev/null | awk -F':[ \t]*' '/Session/{print $2}' || echo unknown)"
     ;;
-  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|wait-app|app-start|app-foreground|boot-completed|kill-helpers|clean-bundle|firewall|init|status}" ;;
+  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|wait-app|app-start|app-foreground|boot-completed|keymap|kill-helpers|clean-bundle|firewall|init|status}" ;;
 esac
