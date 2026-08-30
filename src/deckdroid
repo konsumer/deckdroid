@@ -446,13 +446,16 @@ cmd_launch() {
     gw=${geom%x*}; gh=${geom#*x}
     case "${gw:-}:${gh:-}" in *[!0-9:]*|:*|*:) gw=""; gh="" ;; esac
     if [ -n "$gw" ]; then
-      # cage's X window sets no _NET_WM_PID, so --pid never matches it. Before
-      # Android connects the title is "wlroots - X11-<n>"; afterwards it becomes
-      # "Waydroid". We resize before the session starts, so match the former
-      # first and fall back to the latter.
+      # cage's X window carries neither _NET_WM_PID, WM_NAME nor WM_CLASS, so
+      # every `xdotool search` predicate misses it -- its visible title comes
+      # from _NET_WM_NAME, which xdotool does not match on. xwininfo does show
+      # it, so read the id from there. Before Android connects the title is
+      # "wlroots - X11-<n>"; it becomes "Waydroid" afterwards, and we resize
+      # before the session starts.
       for i in $(seq 1 40); do
-        wid=$( { xdotool search --name "wlroots" 2>/dev/null || true; } | tail -1 )
-        [ -z "$wid" ] && wid=$( { xdotool search --name "^Waydroid$" 2>/dev/null || true; } | tail -1 )
+        wid=$( { xwininfo -root -children 2>/dev/null || true; } \
+               | grep -oE '0x[0-9a-f]+ "(wlroots|Waydroid)[^"]*"' \
+               | grep -oE '^0x[0-9a-f]+' | tail -1 )
         [ -n "$wid" ] && break
         sleep 0.5
       done
