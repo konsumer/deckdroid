@@ -70,6 +70,47 @@ Valve enables binder on the 6.15 and 6.16 kernels but *not* on 6.11, 6.18 or
 | `src/deckdroid-root` | The only privileged code: loop-mount, container, `pid_max` |
 | `src/deckdroid-shortcuts` | Merges Android apps into Steam's `shortcuts.vdf` |
 
+## How a Game Mode launch works
+
+The sequence is not obvious and every step of it was forced by something that
+otherwise fails silently:
+
+1. **Start the container**, loop-mounting the data image over `/var/lib/waydroid`.
+2. **Nest a gamescope** (`--backend sdl --expose-wayland`) on the Xwayland
+   display Steam gives the shortcut. gamescope manages windows through
+   Xwayland (`steamcompmgr` on `:1`) and never shows a bare Wayland client, so
+   a plain compositor like `cage` renders into nothing and Steam spins forever.
+   `DISABLE_GAMESCOPE_WSI=1` is required: Steam force-loads a Vulkan layer that
+   throws a modal error dialog when a *nested* gamescope creates a swapchain.
+3. **Start the waydroid session inside that compositor.** Android's surfaces go
+   to whatever display the session was started on, so starting it outside means
+   the compositor supervises a shell script that draws nothing.
+4. **Wait for `sys.boot_completed`.** `waydroid app list` answers long before
+   Android is up, and an app started too early loses focus to the home screen.
+5. **Show the display before launching.** Android will not resume an activity
+   into a display that is not being presented.
+6. **Start the app with `am start` on the resolved component.** `waydroid app
+   launch` sets `waydroid.active_apps` to the package, which hides windows from
+   every *other* package -- including the first-run permission dialog, which is
+   `com.android.permissioncontroller`. `monkey` exits 0 and does nothing.
+
+## Known issues
+
+- **Steam's on-screen keyboard appears at launch** and has to be dismissed.
+  It is not Android's IME (`mShowRequested=false`), not the Vulkan error
+  dialog, and not a Desktop controller layout. It appears to be Steam's own
+  behaviour for non-Steam shortcuts. Not yet solved.
+- The Android home screen is briefly visible before the app comes forward.
+
+## Troubleshooting
+
+```bash
+deckdroid doctor          # kernel, binder, bundle, sudoers, build id
+deckdroid kill            # tear down a stuck launch (never touches the
+                          # Game Mode session compositor)
+cat ~/Android_Waydroid/launch.log     # Steam discards a shortcut's output
+```
+
 ## Verified on
 
 SteamOS 3.8.16, kernel 6.16.12-valve24.5, Steam Deck. Full path exercised:
