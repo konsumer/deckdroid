@@ -290,6 +290,35 @@ cmd_run_app() {
   # Clear the root side ourselves on every exit path.
   trap 'as_root kill-helpers >/dev/null 2>&1 || true' EXIT INT TERM
   dd_info "session inside compositor on ${WAYLAND_DISPLAY:-unset}"
+
+  # cage's X11 backend opens a fixed 1024x768 window, and Android reads its
+  # resolution from the compositor once, at session start -- resizing later
+  # leaves Android at 1024x768 and letterboxed on the Deck's 1280x800 panel.
+  # So stretch the window to the full screen *before* the session starts.
+  # Our parent process is cage itself, which is how we find its window.
+  if [ -n "${DECKDROID_OUTER_DISPLAY:-}" ]; then
+    local geom w h wid
+    geom=$(DISPLAY=$DECKDROID_OUTER_DISPLAY xdpyinfo 2>/dev/null \
+           | awk '/dimensions:/ {print $2; exit}')
+    w=${geom%x*}; h=${geom#*x}
+    case "${w:-}:${h:-}" in
+      *[!0-9:]*|:*|*:) w=""; h="" ;;
+    esac
+    if [ -n "$w" ]; then
+      for i in $(seq 1 40); do
+        wid=$(DISPLAY=$DECKDROID_OUTER_DISPLAY xdotool search --pid "$PPID" 2>/dev/null | tail -1)
+        [ -n "$wid" ] && break
+        sleep 0.5
+      done
+      if [ -n "$wid" ]; then
+        DISPLAY=$DECKDROID_OUTER_DISPLAY xdotool windowsize "$wid" "$w" "$h" 2>/dev/null || true
+        dd_info "sized compositor window to ${w}x${h}"
+        sleep 1
+      else
+        dd_warn "could not find the compositor window; Android may be letterboxed"
+      fi
+    fi
+  fi
   waydroid session start >"$DECKDROID_ROOT/session.log" 2>&1 &
   for i in $(seq 1 120); do session_running && break; sleep 0.5; done
   session_running || { dd_warn "session did not start; see $DECKDROID_ROOT/session.log"; return 1; }
@@ -411,6 +440,9 @@ cmd_launch() {
   if [ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" ] || [ "${display#gamescope-}" != "$display" ]; then
     export WLR_BACKENDS=x11
     export DISPLAY=${DISPLAY:-:1}
+    # run-app needs the *outer* display to size the compositor window; inside
+    # cage, DISPLAY points at cage's own X server instead.
+    export DECKDROID_OUTER_DISPLAY=$DISPLAY
     dd_info "game mode: cage on X11 (DISPLAY=$DISPLAY)"
   else
     dd_info "desktop mode: cage on $display"
