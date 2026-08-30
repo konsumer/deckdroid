@@ -31,7 +31,8 @@ jobs:
 
       - name: Build bundle
         run: |
-          mkdir -p out
+          # The container builds as an unprivileged user; make the bind mount writable by it.
+          mkdir -p out && chmod 777 out
           docker run --rm \
             -v "$PWD/build:/work/build:ro" \
             -v "$PWD/out:/out" \
