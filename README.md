@@ -26,13 +26,22 @@ curl -sSfL .../install.sh | bash -s -- --root /run/media/deck/SD/Android --size 
 ## Use
 
 ```bash
-deckdroid start | stop | status     # manage the service
-deckdroid ui                        # the full Android UI
-deckdroid app install some.apk
-deckdroid shortcuts sync            # one Steam entry per app, then restart Steam
-deckdroid launch org.lineageos.jelly
-deckdroid doctor                    # what is wrong, if anything
+deckdroid start | stop | status       # manage the service
+deckdroid ui                          # the full Android UI
+deckdroid app install some.apk        # installs, then refreshes icons
+deckdroid shortcuts sync              # one Steam entry per app; restart Steam after
+deckdroid shortcuts sync --all        # include LineageOS's stock apps too
+deckdroid shortcuts remove            # take ours back out
+deckdroid launch org.fdroid.fdroid
+deckdroid refresh                     # regenerate icons and desktop entries
+deckdroid doctor                      # what is wrong, if anything
 ```
+
+`shortcuts sync` only picks up apps you installed: waydroid marks LineageOS's
+stock apps (Clock, Contacts, ...) hidden, and a Steam library is nicer without
+them. Use `--all` if you want them anyway. Your own hand-made non-Steam
+shortcuts are never touched, and `shortcuts.vdf` is backed up before the first
+write.
 
 Each generated Steam shortcut runs `deckdroid launch <package>`: it starts the
 service if it is down, runs the app in its own compositor, and shuts everything
@@ -61,6 +70,13 @@ Valve enables binder on the 6.15 and 6.16 kernels but *not* on 6.11, 6.18 or
 | `src/deckdroid-root` | The only privileged code: loop-mount, container, `pid_max` |
 | `src/deckdroid-shortcuts` | Merges Android apps into Steam's `shortcuts.vdf` |
 
+## Verified on
+
+SteamOS 3.8.16, kernel 6.16.12-valve24.5, Steam Deck. Full path exercised:
+install from the published release, Android boot, APK install, Steam shortcut
+generation with the app's own icon, launch, and automatic shutdown when the app
+closes.
+
 Two design notes worth knowing:
 
 **Why a disk image.** Waydroid hardcodes `/var/lib/waydroid`, and on the Deck
@@ -73,3 +89,9 @@ anything installed there is gone next patch. The bundle runs from your directory
 via `PATH`/`LD_LIBRARY_PATH`/`PYTHONPATH`. The only system files are a sudoers
 rule and a D-Bus policy, both in `/etc`, both re-appliable with
 `deckdroid doctor`.
+
+**Why `lxc.rootfs.mount` is patched.** LXC compiles in `/usr/lib/lxc/rootfs` as
+the mount point for a container rootfs. That path cannot be created on a
+read-only rootfs and is not relocatable, so `lxc-start` fails with "Failed to
+prepare rootfs storage". The build points it at a tmpfs path instead, and the
+root helper repairs already-generated configs in place.
