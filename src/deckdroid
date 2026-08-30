@@ -296,6 +296,15 @@ cmd_run_app() {
 
   for i in $(seq 1 90); do waydroid app list >/dev/null 2>&1 && break; sleep 2; done
 
+  # multi_windows is a *persisted* Android property living in the data image,
+  # so it outranks anything written to waydroid_base.prop. It also has to be
+  # set as the session user: over sudo, waydroid cannot see the session at all
+  # and silently reports "session is stopped".
+  if [ "$(waydroid prop get persist.waydroid.multi_windows 2>/dev/null | tr -d '\r\n')" = "true" ]; then
+    dd_info "disabling multi-window mode"
+    waydroid prop set persist.waydroid.multi_windows false || true
+  fi
+
   # Something has to give the compositor an actual surface. With multi_windows
   # on, waydroid only surfaces app windows -- never the launcher -- so the
   # compositor had nothing to draw and showed black. show-full-ui takes one
