@@ -315,11 +315,14 @@ cmd_run_app() {
   # dialog, which is com.android.permissioncontroller -- would render nothing
   # at all. That is the black screen. So launch first, then widen back to the
   # full display.
-  dd_info "launching $pkg"
-  waydroid app launch "$pkg" || true
-  sleep 3
+  # Widen the display to the whole Android UI first, then bring the app to the
+  # front with a plain launcher intent. `waydroid app launch` would set
+  # active_apps back to the single package and re-hide everything else.
   dd_info "attaching Android display"
   waydroid show-full-ui >>"$DECKDROID_ROOT/session.log" 2>&1 || true
+  sleep 3
+  dd_info "launching $pkg"
+  as_root app-start "$pkg" || true
 
   # Never block forever. If the app never gets a process, give up and exit
   # non-zero so Steam drops the "running" state instead of leaving a shortcut

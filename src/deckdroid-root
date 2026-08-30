@@ -180,6 +180,17 @@ case "${1:-}" in
     [ "$started" = 1 ] || exit 1
     while waydroid shell -- pidof "$pkg" >/dev/null 2>&1; do sleep 2; done
     ;;
+  app-start)
+    # Bring an app to the front WITHOUT touching waydroid.active_apps.
+    # `waydroid app launch` sets that property to the package, which narrows
+    # the display to one package and hides anything else (permission dialogs,
+    # for instance). Starting the launcher intent directly does not.
+    shift
+    pkg=${1:?package required}
+    waydroid shell -- monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 \
+      >/dev/null 2>&1 || true
+    exit 0
+    ;;
   kill-helpers)
     # Clear root-side wait loops left by an interrupted launch.
     pkill -f "deckdroid-root wait-app" 2>/dev/null || true
@@ -199,5 +210,5 @@ case "${1:-}" in
     printf 'binder=%s\n' "$(awk '$2=="binder"{f=1} END{print f?"yes":"no"}' /proc/filesystems)"
     printf 'container=%s\n' "$(waydroid status 2>/dev/null | awk -F':[ \t]*' '/Session/{print $2}' || echo unknown)"
     ;;
-  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|wait-app|kill-helpers|clean-bundle|firewall|init|status}" ;;
+  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|wait-app|app-start|kill-helpers|clean-bundle|firewall|init|status}" ;;
 esac
