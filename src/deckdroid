@@ -88,11 +88,11 @@ cmd_privileged_setup() {
 
 # --- android images -------------------------------------------------------
 
-# waydroid downloads these itself, but only via sourceforge.net's HTML redirect
-# endpoint, which stalls indefinitely on some networks (it did on the Deck this
-# was developed against, dying silently at 103MB of 838MB). Fetch them here from
-# SourceForge's direct download host instead, with resume and checksums, and
-# hand waydroid finished images so it skips its own downloader entirely.
+# waydroid downloads these itself, but with no resume and no way to retry a
+# partial transfer: an interrupted download starts over from zero, which is
+# painful for 1GB over SourceForge's mirrors. Fetch them here instead, against
+# SourceForge's direct download host, with -C - resume and a checksum from the
+# OTA manifest, then hand waydroid finished images so it skips its downloader.
 ota_pick() { # channel romtype -> "url<TAB>filename<TAB>sha256<TAB>size"
   curl -fsSL "https://ota.waydro.id/$1/waydroid_x86_64/$2.json" | python3 -c '
 import json, sys
@@ -104,21 +104,40 @@ url = (newest["url"]
 print("\t".join([url, newest["filename"], newest["id"], str(newest["size"])]))'
 }
 
+# SourceForge picks a mirror at random per request and they are not equal: on
+# the Deck this was tested against, most sustained ~4MB/s while versaweb managed
+# 0.14MB/s, which is what turned a 5-minute download into an apparent hang. So
+# name mirrors explicitly, abort one that crawls, and resume onto the next --
+# the partial file is kept, so switching costs nothing already downloaded.
+DD_MIRRORS=${DD_MIRRORS:-phoenixnap gigenet datapacket netcologne}
+
 fetch_one() { # url file sha256 size dest.img
   local url=$1 file=$2 sha=$3 size=$4 out=$5
   local cache=$DECKDROID_ROOT/images-cache
   mkdir -p "$cache"
+
   if [ ! -f "$cache/$file.ok" ]; then
-    dd_info "downloading $file ($(( size / 1048576 ))MB)"
-    # -C - resumes a partial file; SourceForge mirrors drop connections often.
-    curl -fL --progress-bar -C - --retry 8 --retry-delay 3 --retry-all-errors \
-      --connect-timeout 20 --speed-limit 8192 --speed-time 60 \
-      -o "$cache/$file" "$url" || dd_die "download of $file failed"
+    local got ok=0 m u
+    for m in $DD_MIRRORS ""; do
+      got=$(stat -c %s "$cache/$file" 2>/dev/null || echo 0)
+      [ "$got" -ge "$size" ] && { ok=1; break; }
+      u=$url; [ -n "$m" ] && u="$url?use_mirror=$m"
+      dd_info "downloading $file from ${m:-sourceforge} ($(( (size - got) / 1048576 ))MB to go)"
+      # Give up on a mirror delivering under 400KB/s for 30s and try the next.
+      if curl -fL --progress-bar -C - --connect-timeout 20 \
+           --speed-limit 400000 --speed-time 30 -o "$cache/$file" "$u"; then
+        ok=1; break
+      fi
+      dd_warn "mirror ${m:-sourceforge} was too slow or failed; resuming elsewhere"
+    done
+    [ "$ok" = 1 ] || dd_die "could not download $file from any mirror"
+
     dd_info "verifying checksum"
     echo "$sha  $cache/$file" | sha256sum -c - >/dev/null \
       || { rm -f "$cache/$file"; dd_die "$file failed checksum; re-run to retry"; }
     touch "$cache/$file.ok"
   fi
+
   dd_info "extracting $(basename "$out")"
   local tmp; tmp=$(mktemp -d)
   unzip -qo "$cache/$file" -d "$tmp"
@@ -152,8 +171,12 @@ cmd_start() {
   dd_have_bundle || dd_die "not installed; run 'deckdroid install'"
   if session_running; then dd_info "already running"; return 0; fi
 
+  [ -n "${WAYLAND_DISPLAY:-}" ] || dd_die \
+    "no Wayland display. Run this from a Deck session (Desktop or Game Mode),
+  not a bare ssh shell, or set WAYLAND_DISPLAY yourself."
+
   dd_info "starting container"
-  as_root container-start >"$DECKDROID_ROOT/container.log" 2>&1 &
+  as_root container-start || dd_die "container failed to start"
   # Wait for the container manager to claim its dbus name.
   local i
   for i in $(seq 1 60); do
@@ -162,17 +185,29 @@ cmd_start() {
   done
 
   dd_info "starting session"
-  waydroid session start >"$DECKDROID_ROOT/session.log" 2>&1 &
-  for i in $(seq 1 60); do
+  # Same reasoning as the container unit: outlive the shell that started it.
+  systemctl --user reset-failed deckdroid-session 2>/dev/null || true
+  systemd-run --user --unit=deckdroid-session --collect --quiet \
+    --description="Waydroid session (deckdroid)" \
+    --setenv=PATH="$PATH" --setenv=LD_LIBRARY_PATH="$LD_LIBRARY_PATH" \
+    --setenv=PYTHONPATH="$PYTHONPATH" \
+    --setenv=WAYLAND_DISPLAY="$WAYLAND_DISPLAY" \
+    --setenv=XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
+    waydroid session start \
+    || dd_die "could not start the session unit"
+
+  for i in $(seq 1 120); do
     session_running && break
     sleep 0.5
   done
-  session_running || dd_die "session did not come up; see $DECKDROID_ROOT/session.log"
+  session_running || dd_die "session did not come up.
+  logs: journalctl --user -u deckdroid-session -n 50"
   dd_info "running"
 }
 
 cmd_stop() {
   waydroid session stop 2>/dev/null || true
+  systemctl --user stop deckdroid-session 2>/dev/null || true
   as_root container-stop
   dd_info "stopped"
 }

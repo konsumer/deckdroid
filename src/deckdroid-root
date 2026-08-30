@@ -10,6 +10,7 @@ set -euo pipefail
   || . "$(dirname "$(realpath "$0")")/deckdroid-env"
 
 [ "$(id -u)" -eq 0 ] || dd_die "deckdroid-root must run as root"
+SELF=$(realpath "$0")
 
 # /var is a 230M A/B partition on the Deck, so the Android data set cannot live
 # there. It goes in an ext4 image under the user's chosen directory, loop-mounted
@@ -72,12 +73,28 @@ case "${1:-}" in
     dd_require_binder
     mount_work
     bind_images
+    # lxc.rootfs.mount in the bundled config_base points here; LXC needs the
+    # directory to exist before it will start a container.
+    mkdir -p "$DD_STATE/rootfs"
     raise_pid_max
-    # Runs in the foreground; the caller backgrounds it and waits on the socket.
+    # A transient systemd unit rather than a background process: logind tears
+    # down the session scope when the launching terminal (or ssh) exits, which
+    # would otherwise kill Android the moment the user closes their shell.
+    systemctl is-active --quiet deckdroid-container && exit 0
+    # The unit gets a minimal environment, so hand it the install location
+    # explicitly rather than relying on HOME or the invoking user's config.
+    systemd-run --unit=deckdroid-container --collect --quiet \
+      --description="Waydroid container (deckdroid)" \
+      --setenv=DECKDROID_ROOT="$DECKDROID_ROOT" \
+      "$SELF" container-run
+    ;;
+  container-run)
+    # Internal: the body of the transient unit above.
     exec waydroid container start
     ;;
   container-stop)
-    waydroid container stop || true
+    systemctl stop deckdroid-container 2>/dev/null || true
+    waydroid container stop 2>/dev/null || true
     restore_pid_max
     unbind_images
     umount_work
@@ -94,5 +111,5 @@ case "${1:-}" in
     printf 'binder=%s\n' "$(awk '$2=="binder"{f=1} END{print f?"yes":"no"}' /proc/filesystems)"
     printf 'container=%s\n' "$(waydroid status 2>/dev/null | awk -F':[ \t]*' '/Session/{print $2}' || echo unknown)"
     ;;
-  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-stop|init|status}" ;;
+  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|init|status}" ;;
 esac

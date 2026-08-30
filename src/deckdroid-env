@@ -6,17 +6,27 @@
 # user picked, including the SD card.
 
 # Install location, in precedence order: explicit env, user config, default.
-if [ -z "${DECKDROID_ROOT:-}" ]; then
-  _cfg=${XDG_CONFIG_HOME:-$HOME/.config}/deckdroid/config
-  # When running under sudo, read the invoking user's config, not root's.
+# HOME cannot be assumed: systemd transient units start with a minimal
+# environment, and under sudo it belongs to the wrong user, so resolve the
+# real home from the passwd database rather than trusting the variable.
+dd_home() {
   if [ -n "${SUDO_USER:-}" ]; then
-    _home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
-    _cfg=$_home/.config/deckdroid/config
+    getent passwd "$SUDO_USER" | cut -d: -f6
+  elif [ -n "${HOME:-}" ]; then
+    printf '%s' "$HOME"
+  else
+    getent passwd "$(id -u)" | cut -d: -f6
   fi
+}
+
+if [ -z "${DECKDROID_ROOT:-}" ]; then
+  _home=$(dd_home)
+  _cfg=${XDG_CONFIG_HOME:-$_home/.config}/deckdroid/config
   # shellcheck disable=SC1090
   [ -r "$_cfg" ] && . "$_cfg"
+  DECKDROID_ROOT=${DECKDROID_ROOT:-$_home/Android_Waydroid}
+  unset _home _cfg
 fi
-DECKDROID_ROOT=${DECKDROID_ROOT:-$HOME/Android_Waydroid}
 
 DD_BUNDLE=$DECKDROID_ROOT/bundle
 DD_IMAGE=$DECKDROID_ROOT/data.img

@@ -152,6 +152,17 @@ build_git "$GBINDER_PYTHON_REPO" "$GBINDER_PYTHON_TAG" \
 build_git "$WAYDROID_REPO" "$WAYDROID_TAG" \
   bash -c 'make install DESTDIR="'"$BUNDLE"'" PREFIX=/usr USE_SYSTEMD=0 USE_NFTABLES=1'
 
+# LXC's mount point for a container rootfs is compiled in as /usr/lib/lxc/rootfs.
+# That path cannot exist on SteamOS's read-only rootfs and is not relocatable,
+# so lxc-start fails with "Failed to prepare rootfs storage". waydroid's
+# config_base never sets lxc.rootfs.mount, so point it at a tmpfs path that the
+# root helper creates at start.
+CONFIG_BASE=$BUNDLE/usr/lib/waydroid/data/configs/config_base
+grep -q '^lxc.rootfs.mount' "$CONFIG_BASE" \
+  || sed -i '/^lxc.rootfs.path/a lxc.rootfs.mount = /run/deckdroid/rootfs' "$CONFIG_BASE"
+grep -q '^lxc.rootfs.mount = /run/deckdroid/rootfs' "$CONFIG_BASE" \
+  || { echo "failed to set lxc.rootfs.mount"; exit 1; }
+
 # Headers and static archives are build-time only.
 rm -rf "$BUNDLE/usr/include" "$BUNDLE/usr/lib/pkgconfig"
 find "$BUNDLE" -name '*.a' -delete

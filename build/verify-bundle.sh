@@ -35,6 +35,14 @@ mapfile -t elves < <(
 )
 echo "== scanning ${#elves[@]} ELF objects"
 
+echo "== lxc rootfs mount point is overridden"
+if grep -q '^lxc.rootfs.mount = /run/deckdroid/rootfs' \
+     "$ROOT/usr/lib/waydroid/data/configs/config_base" 2>/dev/null; then
+  note "lxc.rootfs.mount set (compiled-in /usr/lib/lxc/rootfs unusable)" "ok"
+else
+  note "lxc.rootfs.mount MISSING - lxc-start will fail on SteamOS" "FAIL"; fail=1
+fi
+
 echo "== no build-time paths leaked into ELF headers"
 leaked=0
 for elf in "${elves[@]}"; do
