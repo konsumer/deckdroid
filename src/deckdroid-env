@@ -28,6 +28,13 @@ export DECKDROID_ROOT DD_BUNDLE DD_IMAGE DD_WORK DD_STATE
 export PATH=$DD_BUNDLE/usr/bin:$PATH
 export LD_LIBRARY_PATH=$DD_BUNDLE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 export PYTHONPATH=$DD_BUNDLE/usr/lib/waydroid${PYTHONPATH:+:$PYTHONPATH}
+# gbinder is a compiled extension living in the bundle's own site-packages.
+# It is ABI-locked to the Python it was built for, so glob rather than hardcode
+# and let dd_check_python_abi() report a mismatch in plain language.
+for _sp in "$DD_BUNDLE"/usr/lib/python3*/site-packages; do
+  [ -d "$_sp" ] && export PYTHONPATH=$_sp:$PYTHONPATH
+done
+unset _sp
 
 dd_die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 dd_info() { printf '\033[1;36m::\033[0m %s\n' "$*"; }
@@ -46,4 +53,17 @@ dd_require_binder() {
 }
 
 dd_have_bundle() { [ -x "$DD_BUNDLE/usr/bin/waydroid" ]; }
+
+# The bundled gbinder .so only loads on the Python it was compiled against.
+dd_python_abi() {
+  local want have
+  want=$(basename "$(echo "$DD_BUNDLE"/usr/lib/python3*)" 2>/dev/null)
+  have=python$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)
+  [ -n "$want" ] || { echo "unknown"; return; }
+  if [ "$want" = "$have" ]; then
+    echo "ok ($have)"
+  else
+    echo "MISMATCH (bundle built for $want, system has $have)"
+  fi
+}
 dd_mounted() { mountpoint -q "$DD_WORK"; }
