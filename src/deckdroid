@@ -320,15 +320,25 @@ cmd_run_app() {
   # is on screen while the app loads, which is both ugly and -- because the
   # launcher auto-focuses its search field -- a likely trigger for Steam's
   # on-screen keyboard.
-  # `waydroid app list` answers well before Android has finished booting. Start
-  # the app too early and the home screen, coming up afterwards, takes the
-  # foreground right back -- which is exactly what left the launcher on screen.
+  # Order here is fiddly and was arrived at the hard way:
+  #
+  #  1. Wait for boot. `waydroid app list` answers long before Android is up,
+  #     and an app started too early loses the foreground to the home screen.
+  #  2. Show the display *before* launching. Android will not resume an
+  #     activity into a display that is not being presented, so launching
+  #     first simply fails -- three retries, every time.
+  #  3. Then start the app with a plain launcher intent. `waydroid app launch`
+  #     would set active_apps to the package and hide anything from another
+  #     package, such as the first-run permission dialog.
   dd_info "waiting for Android to finish booting"
   for i in $(seq 1 90); do
     as_root boot-completed 2>/dev/null && break
     sleep 2
   done
-  sleep 4   # let the launcher settle so it does not steal focus back
+
+  dd_info "attaching Android display"
+  waydroid show-full-ui >>"$DECKDROID_ROOT/session.log" 2>&1 || true
+  sleep 3
 
   dd_info "launching $pkg"
   local attempt
@@ -341,12 +351,7 @@ cmd_run_app() {
     dd_info "retrying launch of $pkg"
   done
   as_root app-foreground "$pkg" 2>/dev/null \
-    || dd_warn "$pkg did not reach the foreground; showing the Android UI anyway"
-
-  # Widen from the single package to the whole display, so dialogs the app
-  # raises from other packages (permission prompts) are visible too.
-  dd_info "attaching Android display"
-  waydroid show-full-ui >>"$DECKDROID_ROOT/session.log" 2>&1 || true
+    || dd_warn "$pkg did not reach the foreground; leaving the Android UI up"
 
   # Never block forever. If the app never gets a process, give up and exit
   # non-zero so Steam drops the "running" state instead of leaving a shortcut
