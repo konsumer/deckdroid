@@ -321,6 +321,7 @@ cmd_doctor() {
   printf 'binder:    %s\n' "$(awk '$2=="binder"{f=1} END{print f?"built in (good)":"ABSENT - waydroid cannot run"}' /proc/filesystems)"
   printf 'bundle:    %s\n' "$(dd_have_bundle && echo ok || echo missing)"
   [ -f "$DD_BUNDLE/BUNDLE-INFO" ] && sed 's/^/           /' "$DD_BUNDLE/BUNDLE-INFO"
+  printf 'tools:     %s\n' "$(cat "$(dirname "$(realpath "$0")")/VERSION" 2>/dev/null || echo 'unknown (not from a release)')"
   printf 'python:    %s\n' "$(dd_python_abi)"
   printf 'sudoers:   %s\n' "$([ -f /etc/sudoers.d/deckdroid ] && echo installed || echo missing)"
   printf 'dbus:      %s\n' "$([ -f /etc/dbus-1/system.d/id.waydro.Container.conf ] && echo installed || echo missing)"

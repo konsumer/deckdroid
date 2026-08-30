@@ -35,6 +35,11 @@ DD_STATE=/run/deckdroid
 
 export DECKDROID_ROOT DD_BUNDLE DD_IMAGE DD_WORK DD_STATE
 
+# Steam injects its overlay into anything a shortcut launches. It is 32-bit and
+# 64-bit at once, so every process we spawn prints an ELFCLASS32 warning, and it
+# has no business inside the Android container stack anyway. Drop it.
+unset LD_PRELOAD
+
 # waydroid runs as root, and root writing __pycache__ into a user-owned bundle
 # leaves files the user cannot delete, which breaks the next install/upgrade.
 export PYTHONDONTWRITEBYTECODE=1

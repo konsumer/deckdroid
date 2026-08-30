@@ -43,7 +43,12 @@ jobs:
         run: bash build/verify-bundle.sh out/deckdroid-bundle-x86_64.tar.gz
 
       - name: Package launcher scripts
-        run: tar -C src -czf out/deckdroid-tools.tar.gz .
+        run: |
+          # Stamp the build so `deckdroid doctor` can say which commit is
+          # deployed -- otherwise "did my fix actually ship?" is unanswerable.
+          echo "${GITHUB_SHA:0:7} ($(date -u +%Y-%m-%dT%H:%M:%SZ))" > src/VERSION
+          tar -C src -czf out/deckdroid-tools.tar.gz .
+          rm -f src/VERSION
 
       - uses: actions/upload-artifact@v4
         with:
