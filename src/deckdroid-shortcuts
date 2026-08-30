@@ -143,12 +143,12 @@ def build_entry(launcher, package, name, icon_path):
     'ShortcutPath': '',
     'LaunchOptions': f'launch {package}',
     'IsHidden': 0,
-    # 0, not 1: with the desktop configuration permitted, Steam treats the
-    # shortcut as a desktop application and raises its on-screen keyboard the
-    # moment the launch starts -- before Android is even running, so nothing
-    # in Waydroid can be responsible. Set DECKDROID_DESKTOP_CONFIG=1 to
-    # restore the old behaviour.
-    'AllowDesktopConfig': int(os.environ.get('DECKDROID_DESKTOP_CONFIG', '0')),
+    # Left on: it lets Steam offer the desktop layout as one of the
+    # per-shortcut controller configurations, which is useful when the same
+    # setup runs both games and TV apps. Turning it off was tried as a fix for
+    # Steam's on-screen keyboard and made no difference, so there is no reason
+    # to restrict it. DECKDROID_DESKTOP_CONFIG=0 turns it off.
+    'AllowDesktopConfig': int(os.environ.get('DECKDROID_DESKTOP_CONFIG', '1')),
     'AllowOverlay': 1,
     'OpenVR': 0,
     'Devkit': 0,

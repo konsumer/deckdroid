@@ -72,44 +72,75 @@ Valve enables binder on the 6.15 and 6.16 kernels but *not* on 6.11, 6.18 or
 
 ## How a Game Mode launch works
 
-The sequence is not obvious and every step of it was forced by something that
-otherwise fails silently:
+Every step below is ordered the way it is because the alternative fails, and
+most of them fail *silently*. This is the part worth reading before changing
+anything.
 
 1. **Start the container**, loop-mounting the data image over `/var/lib/waydroid`.
-2. **Nest a gamescope** (`--backend sdl --expose-wayland`) on the Xwayland
-   display Steam gives the shortcut. gamescope manages windows through
-   Xwayland (`steamcompmgr` on `:1`) and never shows a bare Wayland client, so
-   a plain compositor like `cage` renders into nothing and Steam spins forever.
-   `DISABLE_GAMESCOPE_WSI=1` is required: Steam force-loads a Vulkan layer that
-   throws a modal error dialog when a *nested* gamescope creates a swapchain.
-3. **Start the waydroid session inside that compositor.** Android's surfaces go
-   to whatever display the session was started on, so starting it outside means
-   the compositor supervises a shell script that draws nothing.
-4. **Wait for `sys.boot_completed`.** `waydroid app list` answers long before
+2. **Run cage on the wlroots X11 backend** (`WLR_BACKENDS=x11`) against the
+   display Steam hands the shortcut. In Game Mode gamescope decides what to
+   show through Xwayland (`steamcompmgr` on `:1`) and never displays a bare
+   Wayland client, so cage on its *Wayland* backend draws into nothing and
+   Steam spins forever. On the X11 backend it makes a plain X window that
+   steamcompmgr focuses like any game.
+3. **Size that window to the screen before starting the session.** cage's X11
+   backend opens a fixed 1024x768 window, and Android reads its resolution from
+   the compositor exactly once, at session start -- resize afterwards and
+   Android stays 1024x768 and letterboxed. The parent does this and the child
+   waits on a handshake file.
+4. **Start the waydroid session inside the compositor.** Android's surfaces go
+   to whatever display the session was started on; start it outside and the
+   compositor supervises a process that draws nothing.
+5. **Wait for `sys.boot_completed`.** `waydroid app list` answers long before
    Android is up, and an app started too early loses focus to the home screen.
-5. **Show the display before launching.** Android will not resume an activity
-   into a display that is not being presented.
-6. **Start the app with `am start` on the resolved component.** `waydroid app
-   launch` sets `waydroid.active_apps` to the package, which hides windows from
-   every *other* package -- including the first-run permission dialog, which is
-   `com.android.permissioncontroller`. `monkey` exits 0 and does nothing.
+6. **Show the display before launching the app.** Android will not resume an
+   activity into a display that is not being presented -- launching first just
+   fails, every retry.
+7. **Start the app with `am start` on the resolved component.** `waydroid app
+   launch` sets `waydroid.active_apps` to the package, which hides windows
+   belonging to any *other* package -- including the first-run permission
+   dialog (`com.android.permissioncontroller`). `monkey` exits 0 and does
+   nothing at all.
+
+`multi_windows` must be off. It is a *persisted* Android property in the data
+image, so it outranks `waydroid_base.prop`, and it has to be set as the session
+user -- over `sudo`, waydroid cannot see the session and reports "session is
+stopped" while appearing to succeed.
+
+### Why not a nested gamescope
+
+It works, but Steam raises its on-screen keyboard for one. Measured, not
+assumed: a nested gamescope popped the keyboard with `--expose-wayland`,
+without it, and with its window tagged `STEAM_GAME` (verified applied); a bare
+`sleep` and cage-on-X11 did not. Dropping gamescope also removes the Gamescope
+WSI Vulkan layer conflict (a modal error dialog that blocked rendering) and
+`gamescopereaper`, which kills its parent's entire process group.
 
 ## Known issues
 
-- **Steam's on-screen keyboard appears at launch** and has to be dismissed.
-  It is not Android's IME (`mShowRequested=false`), not the Vulkan error
-  dialog, and not a Desktop controller layout. It appears to be Steam's own
-  behaviour for non-Steam shortcuts. Not yet solved.
+- **Steam's on-screen keyboard still appears** for the shortcut on some
+  systems. Ruled out: Android's IME (`mShowRequested=false`), the Vulkan error
+  dialog, the controller layout, `AllowDesktopConfig`, and `STEAM_GAME`.
+- **Thin black bars** may remain at the screen edges. A capture of the
+  composited output (`gamescopectl screenshot`) shows a full-width 1280x800
+  image, so any remaining border is applied after compositing -- check Steam's
+  per-shortcut **Scaling Mode** under Quick Access → Performance.
 - The Android home screen is briefly visible before the app comes forward.
 
 ## Troubleshooting
 
 ```bash
 deckdroid doctor          # kernel, binder, bundle, sudoers, build id
-deckdroid kill            # tear down a stuck launch (never touches the
-                          # Game Mode session compositor)
+deckdroid kill            # tear down a stuck launch; only ever touches our own
+                          # compositor, never the Game Mode session
 cat ~/Android_Waydroid/launch.log     # Steam discards a shortcut's output
+gamescopectl screenshot /tmp/shot.png # what is actually on screen
 ```
+
+Two shell traps caused several silent failures here and are worth knowing about
+if you edit these scripts: `grep` exits 1 when it matches nothing, which under
+`set -euo pipefail` aborts the whole launcher; and `waydroid shell` needs root
+while `waydroid prop`/`session` need the session user.
 
 ## Verified on
 
