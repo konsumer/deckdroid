@@ -10,10 +10,17 @@ BUNDLE_URL=https://github.com/$REPO/releases/download/latest/deckdroid-bundle-x8
 
 # Deliberately no "|| sudo" fallback: with one, killing a child made the parent
 # immediately start another, which is why a stuck launch could not be killed.
-as_root() {
-  sudo -n "$DD_ROOT_HELPER" "$@" || dd_die \
-    "cannot run the root helper without a password.
-  Run 'deckdroid doctor'; if the sudoers rule is missing, re-run 'deckdroid install'."
+#
+# This passes the helper's exit status straight through. It must not turn every
+# non-zero exit into an error of its own: wait-app returns 1 when its watchdog
+# fires, and reporting that as "no password" hid the real reason a launch died.
+as_root() { sudo -n "$DD_ROOT_HELPER" "$@"; }
+
+# Check the sudoers rule once, properly, instead of inferring it from failures.
+dd_require_sudo() {
+  sudo -n "$DD_ROOT_HELPER" status >/dev/null 2>&1 || dd_die \
+    "the root helper needs a passwordless sudo rule and does not have one.
+  Re-run 'deckdroid install', or check /etc/sudoers.d/deckdroid."
 }
 
 # --- install ---------------------------------------------------------------
@@ -310,6 +317,7 @@ cmd_launch() {
 
   dd_require_binder
   dd_have_bundle || dd_die "not installed; run 'deckdroid install'"
+  dd_require_sudo
 
   local display
   display=$(dd_wayland_display) || dd_die \
@@ -346,6 +354,12 @@ cmd_launch() {
     w=${geom%x*}; h=${geom#*x}
     case "${w:-}${h:-}" in ''|*[!0-9]*) w=1280; h=800 ;; esac
     export SDL_VIDEODRIVER=x11
+    # Steam force-enables the Gamescope WSI Vulkan layer for anything it
+    # launches. That layer assumes swapchains target the *outer* gamescope, so
+    # a nested one trips "CreateSwapchainKHR: Creating swapchain for
+    # non-Gamescope swapchain" and puts up a modal zenity dialog that blocks
+    # rendering entirely. The layer ships its own opt-out; use it.
+    export DISABLE_GAMESCOPE_WSI=1
     dd_info "game mode: nesting gamescope ${w}x${h} on DISPLAY=${DISPLAY:-unset}"
     compositor=(gamescope --backend sdl --expose-wayland -w "$w" -h "$h" --)
   else
