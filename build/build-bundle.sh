@@ -16,6 +16,7 @@ STAGE=${STAGE:-/tmp/stage}
 PKGROOT=$STAGE/pkgroot
 BUNDLE=$STAGE/bundle
 DECK_LIST=${DECK_LIST:-$SRC_DIR/deck-installed-3.8.16.txt}
+DECK_SONAMES=${DECK_SONAMES:-$SRC_DIR/deck-sonames-3.8.16.txt}
 
 # Pinned upstream revisions. Bump deliberately, never float.
 LIBGLIBUTIL_REPO=https://github.com/sailfishos/libglibutil
@@ -59,8 +60,8 @@ done
 echo "bundling ${#kept[@]} of ${#installed[@]} packages; SteamOS already has the rest"
 printf '%s\n' "${kept[@]}" > "$STAGE/bundled-packages.txt"
 
-msg "Copying their files into the bundle"
-for pkg in "${kept[@]}"; do
+copy_pkg() {
+  local pkg=$1 f
   while read -r f; do
     # pacman -Ql prints paths prefixed with the alternate root; strip it so the
     # patterns below see the real /usr/... path.
@@ -75,7 +76,46 @@ for pkg in "${kept[@]}"; do
     mkdir -p "$BUNDLE$(dirname "$f")"
     sudo cp -a "$PKGROOT$f" "$BUNDLE$f"
   done < <(pac -Qlq "$pkg")
+}
+
+msg "Copying their files into the bundle"
+for pkg in "${kept[@]}"; do copy_pkg "$pkg"; done
+
+# Matching on package names is not enough: SteamOS ships libdisplay-info 0.3
+# (soname .so.3) while this repo's wlroots was built against .so.2, so "the Deck
+# already has that package" would have silently produced a bundle that cannot
+# start. Resolve at the soname level instead and pull in whatever is still
+# missing, until nothing is.
+msg "Satisfying sonames SteamOS cannot provide"
+for round in 1 2 3 4 5; do
+  declare -A have=()
+  while read -r sn; do have["$sn"]=host; done < "$DECK_SONAMES"
+  while read -r l; do have["$(basename "$l")"]=bundle; done \
+    < <(find "$BUNDLE" -name '*.so*' \( -type f -o -type l \))
+
+  missing=()
+  while read -r elf; do
+    while read -r need; do
+      [ -n "$need" ] && [ -z "${have[$need]:-}" ] && missing+=("$need")
+    done < <(readelf -d "$elf" 2>/dev/null | awk -F'[][]' '/NEEDED/{print $2}')
+  done < <(find "$BUNDLE" -type f \( -perm -u+x -o -name '*.so*' \))
+
+  mapfile -t missing < <(printf '%s\n' "${missing[@]:-}" | sort -u | sed '/^$/d')
+  [ "${#missing[@]}" -eq 0 ] && { echo "round $round: nothing missing"; break; }
+
+  echo "round $round: pulling in ${missing[*]}"
+  for sn in "${missing[@]}"; do
+    path=$(find "$PKGROOT/usr/lib" -name "$sn" -print -quit 2>/dev/null || true)
+    [ -n "$path" ] || { echo "  no provider for $sn in the repos"; continue; }
+    owner=$(pac -Qoq "$path" 2>/dev/null | head -1)
+    [ -n "$owner" ] || continue
+    echo "  $sn <- $owner"
+    copy_pkg "$owner"
+    kept+=("$owner")
+  done
+  unset have
 done
+printf '%s\n' "${kept[@]}" | sort -u > "$STAGE/bundled-packages.txt"
 
 sudo chown -R "$(id -u):$(id -g)" "$BUNDLE"
 # Everything must stay readable by whoever unpacks it, and a user-owned
