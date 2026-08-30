@@ -28,7 +28,9 @@ BINARY_PKGS=(lxc cage wlr-randr dnsmasq)
 
 msg() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
-rm -rf "$STAGE"; mkdir -p "$PKGROOT" "$BUNDLE/usr" "$OUT"
+rm -rf "$STAGE"
+# pacman refuses to initialise against a root whose db dir does not exist yet.
+mkdir -p "$PKGROOT/var/lib/pacman" "$PKGROOT/var/cache/pacman/pkg" "$BUNDLE/usr" "$OUT"
 
 # ---------------------------------------------------------------------------
 msg "Resolving binary packages into an alternate root"
