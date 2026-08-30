@@ -70,8 +70,10 @@ for d in usr/bin usr/lib usr/share usr/libexec; do
   [ -d "$PKGROOT/$d" ] && { mkdir -p "$BUNDLE/$(dirname $d)"; sudo cp -a "$PKGROOT/$d" "$BUNDLE/$d"; }
 done
 sudo chown -R "$(id -u):$(id -g)" "$BUNDLE"
-# Nothing in a relocated user-owned bundle may keep setuid bits.
-find "$BUNDLE" -type f -perm /6000 -exec chmod a-s {} +
+# Nothing in a relocated user-owned bundle may keep setuid bits, and every file
+# has to stay readable by whoever unpacks it (dbus ships a 4750 root-only
+# helper that would otherwise be unreadable in the tarball).
+sudo chmod -R u+rwX,go-s "$BUNDLE"
 
 # ---------------------------------------------------------------------------
 build_git() { # url tag builder...
@@ -122,6 +124,7 @@ msg "Recording provenance"
 cp "$STAGE/bundled-packages.txt" "$BUNDLE/BUNDLED-PACKAGES"
 
 msg "Packing"
-tar -C "$BUNDLE" -czf "$OUT/deckdroid-bundle-x86_64.tar.gz" .
+sudo tar -C "$BUNDLE" --owner=0 --group=0 -czf "$OUT/deckdroid-bundle-x86_64.tar.gz" .
+sudo chown "$(id -u):$(id -g)" "$OUT/deckdroid-bundle-x86_64.tar.gz"
 ( cd "$OUT" && sha256sum deckdroid-bundle-x86_64.tar.gz > deckdroid-bundle-x86_64.tar.gz.sha256 )
 ls -lh "$OUT"
