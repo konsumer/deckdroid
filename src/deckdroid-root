@@ -65,6 +65,45 @@ ensure_rootfs_mount() {
   dd_info "added lxc.rootfs.mount to the container config"
 }
 
+# Waydroid only hands the host compositor a surface per *app window* when
+# multi_windows is on -- and the Android launcher is not one, so the compositor
+# gets nothing to draw and shows a black screen. Take a single full-screen
+# surface instead. waydroid writes [properties] into waydroid_base.prop at
+# session start, so this is the setting that actually sticks.
+ensure_properties() {
+  local cfg=$DD_WORK/waydroid.cfg
+  [ -f "$cfg" ] || return 0
+  python3 -c '
+import configparser, sys
+path = sys.argv[1]
+cfg = configparser.ConfigParser()
+cfg.optionxform = str          # waydroid keys are case-sensitive
+cfg.read(path)
+if not cfg.has_section("properties"):
+    cfg.add_section("properties")
+wanted = {"persist.waydroid.multi_windows": "false"}
+changed = False
+for key, value in wanted.items():
+    if cfg.get("properties", key, fallback=None) != value:
+        cfg.set("properties", key, value)
+        changed = True
+if changed:
+    with open(path, "w") as handle:
+        cfg.write(handle)
+' "$cfg"
+}
+
+# SteamOS runs firewalld, and its default "public" zone silently drops DHCP on
+# the waydroid bridge: Android broadcasts DHCPDISCOVER forever and ends up with
+# no address and no internet. The bridge is ours and host-local, so trust it.
+ensure_firewall() {
+  systemctl is-active --quiet firewalld 2>/dev/null || return 0
+  firewall-cmd --zone=trusted --list-interfaces 2>/dev/null | grep -qw waydroid0 && return 0
+  firewall-cmd --zone=trusted --add-interface=waydroid0 >/dev/null 2>&1 || true
+  firewall-cmd --permanent --zone=trusted --add-interface=waydroid0 >/dev/null 2>&1 || true
+  dd_info "added waydroid0 to the firewalld trusted zone"
+}
+
 # Android expects far more pids than SteamOS's default allows.
 raise_pid_max() {
   mkdir -p "$DD_STATE"
@@ -89,6 +128,7 @@ case "${1:-}" in
     # directory to exist before it will start a container.
     mkdir -p "$DD_STATE/rootfs"
     ensure_rootfs_mount
+    ensure_properties
     raise_pid_max
     # A transient systemd unit rather than a background process: logind tears
     # down the session scope when the launching terminal (or ssh) exits, which
@@ -96,6 +136,7 @@ case "${1:-}" in
     systemctl is-active --quiet deckdroid-container && exit 0
     # The unit gets a minimal environment, so hand it the install location
     # explicitly rather than relying on HOME or the invoking user's config.
+    ensure_firewall
     systemd-run --unit=deckdroid-container --collect --quiet \
       --description="Waydroid container (deckdroid)" \
       --setenv=DECKDROID_ROOT="$DECKDROID_ROOT" \
@@ -111,6 +152,9 @@ case "${1:-}" in
     restore_pid_max
     unbind_images
     umount_work
+    ;;
+  firewall)
+    ensure_firewall
     ;;
   init)
     shift
@@ -155,5 +199,5 @@ case "${1:-}" in
     printf 'binder=%s\n' "$(awk '$2=="binder"{f=1} END{print f?"yes":"no"}' /proc/filesystems)"
     printf 'container=%s\n' "$(waydroid status 2>/dev/null | awk -F':[ \t]*' '/Session/{print $2}' || echo unknown)"
     ;;
-  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|wait-app|kill-helpers|clean-bundle|init|status}" ;;
+  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|wait-app|kill-helpers|clean-bundle|firewall|init|status}" ;;
 esac

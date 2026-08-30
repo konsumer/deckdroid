@@ -295,6 +295,15 @@ cmd_run_app() {
   session_running || { dd_warn "session did not start; see $DECKDROID_ROOT/session.log"; return 1; }
 
   for i in $(seq 1 90); do waydroid app list >/dev/null 2>&1 && break; sleep 2; done
+
+  # Something has to give the compositor an actual surface. With multi_windows
+  # on, waydroid only surfaces app windows -- never the launcher -- so the
+  # compositor had nothing to draw and showed black. show-full-ui takes one
+  # full-screen surface, and the app is then launched onto it.
+  dd_info "attaching Android display"
+  waydroid show-full-ui >>"$DECKDROID_ROOT/session.log" 2>&1 &
+  sleep 6   # let the surface map before putting the app on top of it
+
   dd_info "launching $pkg"
   waydroid app launch "$pkg" || true
 
@@ -335,9 +344,6 @@ cmd_launch() {
   as_root container-start || dd_die "container failed to start"
   local i
   for i in $(seq 1 60); do waydroid status >/dev/null 2>&1 && break; sleep 0.5; done
-
-  # One app per window rather than the whole Android launcher UI.
-  waydroid prop set persist.waydroid.multi_windows true 2>/dev/null || true
 
   # Pick the compositor to run Android inside.
   #
