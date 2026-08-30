@@ -8,7 +8,13 @@ DD_ROOT_HELPER=$(dirname "$(realpath "$0")")/deckdroid-root
 REPO=${DECKDROID_REPO:-konsumer/deckdroid}
 BUNDLE_URL=https://github.com/$REPO/releases/download/latest/deckdroid-bundle-x86_64.tar.gz
 
-as_root() { sudo -n "$DD_ROOT_HELPER" "$@" 2>/dev/null || sudo "$DD_ROOT_HELPER" "$@"; }
+# Deliberately no "|| sudo" fallback: with one, killing a child made the parent
+# immediately start another, which is why a stuck launch could not be killed.
+as_root() {
+  sudo -n "$DD_ROOT_HELPER" "$@" || dd_die \
+    "cannot run the root helper without a password.
+  Run 'deckdroid doctor'; if the sudoers rule is missing, re-run 'deckdroid install'."
+}
 
 # --- install ---------------------------------------------------------------
 
@@ -240,11 +246,11 @@ cmd_stop() {
   # Clear a compositor left behind by an interrupted launch, so Steam stops
   # treating the shortcut as running. Only ever our own recorded pid.
   local stale
-  stale=$(cat "$DECKDROID_ROOT/cage.pid" 2>/dev/null || true)
+  stale=$(cat "$DECKDROID_ROOT/compositor.pid" 2>/dev/null || true)
   if [ -n "$stale" ] && [ "$stale" != "$$" ] && kill -0 "$stale" 2>/dev/null; then
     kill "$stale" 2>/dev/null || true
   fi
-  rm -f "$DECKDROID_ROOT/cage.pid"
+  rm -f "$DECKDROID_ROOT/compositor.pid"
   waydroid session stop 2>/dev/null || true
   systemctl --user stop deckdroid-session 2>/dev/null || true
   as_root container-stop
@@ -271,7 +277,7 @@ cmd_status() {
 # associate with the Steam shortcut -- a spinning Steam logo and no picture.
 cmd_run_app() {
   local pkg=$1 i
-  dd_info "session inside cage on ${WAYLAND_DISPLAY:-unset}"
+  dd_info "session inside compositor on ${WAYLAND_DISPLAY:-unset}"
   waydroid session start >"$DECKDROID_ROOT/session.log" 2>&1 &
   for i in $(seq 1 120); do session_running && break; sleep 0.5; done
   session_running || { dd_warn "session did not start; see $DECKDROID_ROOT/session.log"; return 1; }
@@ -279,7 +285,14 @@ cmd_run_app() {
   for i in $(seq 1 90); do waydroid app list >/dev/null 2>&1 && break; sleep 2; done
   dd_info "launching $pkg"
   waydroid app launch "$pkg" || true
-  as_root wait-app "$pkg"
+
+  # Never block forever. If the app never gets a process, give up and exit
+  # non-zero so Steam drops the "running" state instead of leaving a shortcut
+  # that cannot be closed from the UI.
+  if ! as_root wait-app "$pkg" --startup-timeout "${DECKDROID_STARTUP_TIMEOUT:-90}"; then
+    dd_warn "$pkg never started; giving up"
+    return 1
+  fi
 }
 
 cmd_launch() {
@@ -313,16 +326,38 @@ cmd_launch() {
   # One app per window rather than the whole Android launcher UI.
   waydroid prop set persist.waydroid.multi_windows true 2>/dev/null || true
 
+  # Pick the compositor to run Android inside.
+  #
+  # In Game Mode, gamescope manages windows through Xwayland (steamcompmgr on
+  # DISPLAY=:1) and never sees a pure Wayland client, so cage renders into the
+  # void: Steam spins forever waiting for a window that will never be reported.
+  # A nested gamescope instead presents itself as an X window steamcompmgr can
+  # focus, while --expose-wayland gives Android an xdg-shell display to draw on.
+  # In Desktop Mode there is no outer gamescope and cage is the lighter option.
+  local -a compositor
+  if [ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" ] || [ "${display#gamescope-}" != "$display" ]; then
+    local geom w h
+    geom=$(xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2; exit}')
+    w=${geom%x*}; h=${geom#*x}
+    case "${w:-}${h:-}" in ''|*[!0-9]*) w=1280; h=800 ;; esac
+    export SDL_VIDEODRIVER=x11
+    dd_info "game mode: nesting gamescope ${w}x${h} on DISPLAY=${DISPLAY:-unset}"
+    compositor=(gamescope --backend sdl --expose-wayland -w "$w" -h "$h" --)
+  else
+    dd_info "desktop mode: using cage on $display"
+    compositor=(cage --)
+  fi
+
   trap 'cmd_stop; exit 0' INT TERM
-  dd_info "handing off to cage on $display"
-  # Remember the compositor: if a launch is interrupted, a surviving cage makes
+  # Remember the compositor pid: if a launch is interrupted, a survivor makes
   # Steam believe the shortcut is still running and silently refuse to start it
-  # again, which looks exactly like "nothing happens".
-  cage -- "$(realpath "$0")" run-app "$pkg" &
-  local cage_pid=$!
-  echo "$cage_pid" > "$DECKDROID_ROOT/cage.pid"
-  wait "$cage_pid" || true
-  rm -f "$DECKDROID_ROOT/cage.pid"
+  # again, which looks exactly like "nothing happens". Recording it also means
+  # cleanup never has to guess which gamescope is ours.
+  "${compositor[@]}" "$(realpath "$0")" run-app "$pkg" &
+  local comp_pid=$!
+  echo "$comp_pid" > "$DECKDROID_ROOT/compositor.pid"
+  wait "$comp_pid" || true
+  rm -f "$DECKDROID_ROOT/compositor.pid"
   if [ "${DECKDROID_KEEP_RUNNING:-0}" != "1" ]; then cmd_stop; fi
 }
 
@@ -339,6 +374,32 @@ cmd_app() {
     list) waydroid app list ;;
     *) dd_die "usage: deckdroid app {install <apk>|remove <pkg>|list}" ;;
   esac
+}
+
+# Tear down a stuck launch. Parents before children, because a surviving parent
+# just starts the child again.
+cmd_kill() {
+  local pat pids p me=$$
+  for pat in "deckdroid launch" "deckdroid run-app"; do
+    pids=$(pgrep -f -- "$pat" 2>/dev/null || true)
+    for p in $pids; do
+      # never kill this process or its shell
+      case " $me $PPID " in *" $p "*) continue ;; esac
+      kill -9 "$p" 2>/dev/null || true
+    done
+    sleep 1
+  done
+  as_root kill-helpers || true
+
+  # Only ever the compositor we recorded. Never `pkill gamescope`: in Game Mode
+  # that would kill the compositor running the whole Steam session.
+  local ours
+  ours=$(cat "$DECKDROID_ROOT/compositor.pid" 2>/dev/null || true)
+  if [ -n "$ours" ] && kill -0 "$ours" 2>/dev/null; then
+    kill -9 "$ours" 2>/dev/null || true
+  fi
+  rm -f "$DECKDROID_ROOT/compositor.pid"
+  cmd_stop
 }
 
 cmd_doctor() {
@@ -368,6 +429,7 @@ case "${1:-}" in
   app) shift; cmd_app "$@" ;;
   refresh) cmd_refresh ;;
   shortcuts) shift; exec "$(dirname "$(realpath "$0")")/deckdroid-shortcuts" "$@" ;;
+  kill) cmd_kill ;;
   doctor) cmd_doctor ;;
   ui) cmd_start; cage -- waydroid show-full-ui ;;
   *)
@@ -382,6 +444,7 @@ deckdroid - Waydroid on the Steam Deck, installed wherever you want
   app install <apk> | remove | list   manage apps
   refresh                             regenerate app icons and desktop entries
   shortcuts sync                      add a Steam entry per installed app
+  kill                                force-stop a stuck launch
   doctor                              diagnose
 USAGE
     ;;

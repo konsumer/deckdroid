@@ -125,11 +125,21 @@ case "${1:-}" in
     # entire lifetime rather than one per tick.
     shift
     pkg=${1:?package required}
-    for _ in $(seq 1 60); do
-      waydroid shell -- pidof "$pkg" >/dev/null 2>&1 && break
+    timeout=90
+    [ "${2:-}" = "--startup-timeout" ] && timeout=${3:-90}
+    started=0
+    for _ in $(seq 1 "$timeout"); do
+      if waydroid shell -- pidof "$pkg" >/dev/null 2>&1; then started=1; break; fi
       sleep 1
     done
+    # Exit non-zero rather than blocking forever on an app that never came up.
+    [ "$started" = 1 ] || exit 1
     while waydroid shell -- pidof "$pkg" >/dev/null 2>&1; do sleep 2; done
+    ;;
+  kill-helpers)
+    # Clear root-side wait loops left by an interrupted launch.
+    pkill -f "deckdroid-root wait-app" 2>/dev/null || true
+    exit 0
     ;;
   clean-bundle)
     # Remove a bundle that root left un-deletable files in. Scoped to the
@@ -145,5 +155,5 @@ case "${1:-}" in
     printf 'binder=%s\n' "$(awk '$2=="binder"{f=1} END{print f?"yes":"no"}' /proc/filesystems)"
     printf 'container=%s\n' "$(waydroid status 2>/dev/null | awk -F':[ \t]*' '/Session/{print $2}' || echo unknown)"
     ;;
-  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|wait-app|clean-bundle|init|status}" ;;
+  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|wait-app|kill-helpers|clean-bundle|init|status}" ;;
 esac
