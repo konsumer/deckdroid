@@ -85,8 +85,12 @@ build_git() { # url tag builder...
 # libglibutil and libgbinder are plain Makefiles; they honour prefix + DESTDIR.
 build_git "$LIBGLIBUTIL_REPO" "$LIBGLIBUTIL_TAG" \
   bash -c 'make -j"$(nproc)" release pkgconfig && make install-dev DESTDIR="'"$BUNDLE"'" LIBDIR=/usr/lib'
+# The .pc files these projects install still say prefix=/usr, so pkg-config
+# hands back include paths that do not exist in a relocated tree. Point the
+# compiler at the real locations explicitly; our -I comes first and wins.
 export PKG_CONFIG_PATH=$BUNDLE/usr/lib/pkgconfig
-export CFLAGS="-I$BUNDLE/usr/include" LDFLAGS="-L$BUNDLE/usr/lib"
+export CFLAGS="-I$BUNDLE/usr/include -I$BUNDLE/usr/include/gutil -I$BUNDLE/usr/include/gbinder"
+export LDFLAGS="-L$BUNDLE/usr/lib"
 
 build_git "$LIBGBINDER_REPO" "$LIBGBINDER_TAG" \
   bash -c 'make -j"$(nproc)" release pkgconfig && make install-dev DESTDIR="'"$BUNDLE"'" LIBDIR=/usr/lib'
