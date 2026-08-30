@@ -204,6 +204,17 @@ cmd_start() {
   done
   session_running || dd_die "session did not come up.
   logs: journalctl --user -u deckdroid-session -n 50"
+
+  # A running session is not a booted Android: the platform service comes up
+  # seconds later, and app commands issued before then fail with
+  # "Failed to get service waydroidplatform". Wait for it to answer.
+  dd_info "waiting for Android to finish booting"
+  for i in $(seq 1 90); do
+    waydroid app list >/dev/null 2>&1 && break
+    sleep 2
+  done
+  waydroid app list >/dev/null 2>&1 \
+    || dd_warn "Android is up but its platform service is not answering yet"
   dd_info "running"
 }
 
