@@ -171,11 +171,28 @@ session_running() { waydroid status 2>/dev/null | grep -qi 'Session:[[:space:]]*
 cmd_start() {
   dd_require_binder
   dd_have_bundle || dd_die "not installed; run 'deckdroid install'"
-  if session_running; then dd_info "already running"; return 0; fi
+  if session_running; then
+    printf '%s' "$display" > "$marker" 2>/dev/null || true
+    dd_info "already running"
+    return 0
+  fi
 
-  [ -n "${WAYLAND_DISPLAY:-}" ] || dd_die \
-    "no Wayland display. Run this from a Deck session (Desktop or Game Mode),
-  not a bare ssh shell, or set WAYLAND_DISPLAY yourself."
+  local display
+  display=$(dd_wayland_display) || dd_die \
+    "no Wayland display found in ${XDG_RUNTIME_DIR:-/run/user/$(id -u)}.
+  Run this from a Deck session (Desktop or Game Mode), not a bare ssh shell."
+  export WAYLAND_DISPLAY=$display
+  export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+
+  # A session started in Desktop Mode is bound to kwin's socket, which no longer
+  # exists once you switch to Game Mode. Restart it rather than handing the app
+  # a dead display.
+  local marker=$DECKDROID_ROOT/.session-display
+  if session_running && [ "$(cat "$marker" 2>/dev/null)" != "$display" ]; then
+    dd_info "display changed to $display; restarting session"
+    waydroid session stop 2>/dev/null || true
+    systemctl --user stop deckdroid-session 2>/dev/null || true
+  fi
 
   dd_info "starting container"
   as_root container-start || dd_die "container failed to start"
@@ -215,7 +232,8 @@ cmd_start() {
   done
   waydroid app list >/dev/null 2>&1 \
     || dd_warn "Android is up but its platform service is not answering yet"
-  dd_info "running"
+  printf '%s' "$display" > "$marker" 2>/dev/null || true
+  dd_info "running (display $display)"
 }
 
 cmd_stop() {
@@ -249,6 +267,10 @@ cmd_run_app() {
 cmd_launch() {
   local pkg=${1:-}
   [ -n "$pkg" ] || dd_die "usage: deckdroid launch <package>"
+  # Steam discards a shortcut's stdout, so a Game Mode failure would otherwise
+  # be invisible. Keep a copy of everything this run prints.
+  exec > >(tee -a "$DECKDROID_ROOT/launch.log") 2>&1
+  echo "--- $(date -Is) launch $pkg (display=${WAYLAND_DISPLAY:-unset} gamescope=${GAMESCOPE_WAYLAND_DISPLAY:-unset})"
   cmd_start
   # One app per window, rather than the whole Android launcher UI, so a Steam
   # shortcut opens the game and nothing else.

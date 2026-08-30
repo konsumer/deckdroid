@@ -68,6 +68,25 @@ dd_require_binder() {
 
 dd_have_bundle() { [ -x "$DD_BUNDLE/usr/bin/waydroid" ]; }
 
+# Find a Wayland display to run against. Desktop Mode exports WAYLAND_DISPLAY
+# (kwin, wayland-0), but Game Mode does not export it at all -- gamescope
+# advertises GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 instead, so a shortcut
+# launched from the Steam UI inherits no WAYLAND_DISPLAY and anything that
+# insists on one dies on the spot. Check both, then fall back to probing the
+# sockets that actually exist.
+dd_wayland_display() {
+  local rd=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} candidate
+  for candidate in "${WAYLAND_DISPLAY:-}" "${GAMESCOPE_WAYLAND_DISPLAY:-}" \
+                   gamescope-0 wayland-0 wayland-1; do
+    [ -n "$candidate" ] || continue
+    case $candidate in
+      /*) [ -S "$candidate" ] && { printf '%s' "$candidate"; return 0; } ;;
+      *)  [ -S "$rd/$candidate" ] && { printf '%s' "$candidate"; return 0; } ;;
+    esac
+  done
+  return 1
+}
+
 # The bundled gbinder .so only loads on the Python it was compiled against.
 dd_python_abi() {
   local want have
