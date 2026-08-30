@@ -35,6 +35,10 @@ DD_STATE=/run/deckdroid
 
 export DECKDROID_ROOT DD_BUNDLE DD_IMAGE DD_WORK DD_STATE
 
+# waydroid runs as root, and root writing __pycache__ into a user-owned bundle
+# leaves files the user cannot delete, which breaks the next install/upgrade.
+export PYTHONDONTWRITEBYTECODE=1
+
 export PATH=$DD_BUNDLE/usr/bin:$PATH
 export LD_LIBRARY_PATH=$DD_BUNDLE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 export PYTHONPATH=$DD_BUNDLE/usr/lib/waydroid${PYTHONPATH:+:$PYTHONPATH}

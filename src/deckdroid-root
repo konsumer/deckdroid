@@ -131,10 +131,19 @@ case "${1:-}" in
     done
     while waydroid shell -- pidof "$pkg" >/dev/null 2>&1; do sleep 2; done
     ;;
+  clean-bundle)
+    # Remove a bundle that root left un-deletable files in. Scoped to the
+    # configured install root so this can never be pointed at anything else.
+    case "$DD_BUNDLE" in
+      ""|/|/usr|/etc|/home|/var) dd_die "refusing to remove $DD_BUNDLE" ;;
+      */bundle) rm -rf "$DD_BUNDLE" ;;
+      *) dd_die "refusing to remove $DD_BUNDLE" ;;
+    esac
+    ;;
   status)
     printf 'mounted=%s\n' "$(dd_mounted && echo yes || echo no)"
     printf 'binder=%s\n' "$(awk '$2=="binder"{f=1} END{print f?"yes":"no"}' /proc/filesystems)"
     printf 'container=%s\n' "$(waydroid status 2>/dev/null | awk -F':[ \t]*' '/Session/{print $2}' || echo unknown)"
     ;;
-  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|wait-app|init|status}" ;;
+  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|wait-app|clean-bundle|init|status}" ;;
 esac

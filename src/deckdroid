@@ -50,7 +50,9 @@ cmd_install() {
       || dd_die "bundle checksum mismatch"
     dd_info "checksum verified"
   fi
-  rm -rf "$DD_BUNDLE"; mkdir -p "$DD_BUNDLE"
+  # An older bundle may contain root-owned bytecode; fall back to the helper.
+  rm -rf "$DD_BUNDLE" 2>/dev/null || as_root clean-bundle
+  mkdir -p "$DD_BUNDLE"
   tar -C "$DD_BUNDLE" -xzf "$tmp/bundle.tar.gz"
 
   if [ ! -f "$DD_IMAGE" ]; then
