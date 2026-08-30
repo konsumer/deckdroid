@@ -223,23 +223,57 @@ cmd_status() {
 
 # --- apps ------------------------------------------------------------------
 
+# Internal: the process cage supervises. `waydroid app launch` only fires an
+# intent and returns immediately, so running it as cage's child would close the
+# compositor before the app had drawn anything. Hold the session open for as
+# long as the app actually has a process.
+cmd_run_app() {
+  local pkg=$1
+  waydroid app launch "$pkg" || true
+  as_root wait-app "$pkg"
+}
+
 cmd_launch() {
   local pkg=${1:-}
   [ -n "$pkg" ] || dd_die "usage: deckdroid launch <package>"
   cmd_start
+  # One app per window, rather than the whole Android launcher UI, so a Steam
+  # shortcut opens the game and nothing else.
+  waydroid prop set persist.waydroid.multi_windows true 2>/dev/null || true
   dd_info "launching $pkg"
+  # Steam kills a shortcut's process when you quit from the overlay, so shut the
+  # service down on a signal too, not only on a clean exit.
+  trap 'cmd_stop; exit 0' INT TERM
   # cage gives the app its own Wayland compositor, which is what lets a
   # non-Steam shortcut behave like a normal game in Game Mode.
-  cage -- waydroid app launch "$pkg" || true
+  cage -- "$(realpath "$0")" run-app "$pkg" || true
   # The shortcut's lifetime is the app's: shut down when the window closes so a
   # backgrounded Android does not eat memory during the next game.
   if [ "${DECKDROID_KEEP_RUNNING:-0}" != "1" ]; then cmd_stop; fi
 }
 
+# waydroid only writes .desktop files and icons for installed apps when the
+# session's user monitor does its startup pass, so a freshly installed APK has
+# no icon and no Steam entry until the session is restarted.
+cmd_refresh() {
+  session_running || dd_die "not running"
+  dd_info "refreshing app list"
+  systemctl --user restart deckdroid-session
+  local i
+  for i in $(seq 1 120); do session_running && break; sleep 0.5; done
+  sleep 10   # give the user monitor time to write desktop files and icons
+  dd_info "done"
+}
+
 cmd_app() {
   cmd_start
   case "${1:-}" in
-    install) shift; waydroid app install "$@" ;;
+    install)
+      shift
+      waydroid app install "$@"
+      cmd_refresh
+      dd_info "run 'deckdroid shortcuts sync' to add it to Steam"
+      ;;
     remove) shift; waydroid app remove "$@" ;;
     list) waydroid app list ;;
     *) dd_die "usage: deckdroid app {install <apk>|remove <pkg>|list}" ;;
@@ -268,7 +302,9 @@ case "${1:-}" in
   restart) cmd_stop; cmd_start ;;
   status) cmd_status ;;
   launch) shift; cmd_launch "$@" ;;
+  run-app) shift; cmd_run_app "$@" ;;
   app) shift; cmd_app "$@" ;;
+  refresh) cmd_refresh ;;
   shortcuts) shift; exec "$(dirname "$(realpath "$0")")/deckdroid-shortcuts" "$@" ;;
   doctor) cmd_doctor ;;
   ui) cmd_start; cage -- waydroid show-full-ui ;;
@@ -282,6 +318,7 @@ deckdroid - Waydroid on the Steam Deck, installed wherever you want
   ui                                  full Android UI
   launch <package>                    run one app, stop when it exits
   app install <apk> | remove | list   manage apps
+  refresh                             regenerate app icons and desktop entries
   shortcuts sync                      add a Steam entry per installed app
   doctor                              diagnose
 USAGE

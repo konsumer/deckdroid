@@ -53,6 +53,18 @@ unbind_images() {
   return 0
 }
 
+# waydroid writes the LXC config once, at init, and does not regenerate it on
+# every start -- so patching the bundle's config_base only helps new installs.
+# Repair the live config too, or lxc-start falls back to its compiled-in
+# /usr/lib/lxc/rootfs, which cannot exist on a read-only rootfs.
+ensure_rootfs_mount() {
+  local cfg=$DD_WORK/lxc/waydroid/config
+  [ -f "$cfg" ] || return 0
+  grep -q '^lxc.rootfs.mount' "$cfg" && return 0
+  sed -i "/^lxc.rootfs.path/a lxc.rootfs.mount = $DD_STATE/rootfs" "$cfg"
+  dd_info "added lxc.rootfs.mount to the container config"
+}
+
 # Android expects far more pids than SteamOS's default allows.
 raise_pid_max() {
   mkdir -p "$DD_STATE"
@@ -76,6 +88,7 @@ case "${1:-}" in
     # lxc.rootfs.mount in the bundled config_base points here; LXC needs the
     # directory to exist before it will start a container.
     mkdir -p "$DD_STATE/rootfs"
+    ensure_rootfs_mount
     raise_pid_max
     # A transient systemd unit rather than a background process: logind tears
     # down the session scope when the launching terminal (or ssh) exits, which
@@ -106,10 +119,22 @@ case "${1:-}" in
     bind_images
     exec waydroid init "$@"
     ;;
+  wait-app)
+    # Block while an Android package has a live process. `waydroid shell` needs
+    # root, so the whole poll loop lives here: one sudo call for the app's
+    # entire lifetime rather than one per tick.
+    shift
+    pkg=${1:?package required}
+    for _ in $(seq 1 60); do
+      waydroid shell -- pidof "$pkg" >/dev/null 2>&1 && break
+      sleep 1
+    done
+    while waydroid shell -- pidof "$pkg" >/dev/null 2>&1; do sleep 2; done
+    ;;
   status)
     printf 'mounted=%s\n' "$(dd_mounted && echo yes || echo no)"
     printf 'binder=%s\n' "$(awk '$2=="binder"{f=1} END{print f?"yes":"no"}' /proc/filesystems)"
     printf 'container=%s\n' "$(waydroid status 2>/dev/null | awk -F':[ \t]*' '/Session/{print $2}' || echo unknown)"
     ;;
-  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|init|status}" ;;
+  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|wait-app|init|status}" ;;
 esac

@@ -93,13 +93,18 @@ def steam_user_dirs():
           yield cfg
 
 
-def desktop_entries():
-  """Read waydroid's generated .desktop files -> (package, name, icon)."""
+def desktop_entries(include_hidden=False):
+  """Read waydroid's generated .desktop files -> (package, name, icon).
+
+  Waydroid marks LineageOS's stock apps NoDisplay so they do not clutter the
+  app menu. Those are skipped by default -- a Steam library wants the user's
+  own apps, not a Clock tile -- but --all brings them back.
+  """
   apps = Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local/share')) / 'applications'
   for path in sorted(apps.glob('waydroid.*.desktop')):
     text = path.read_text(errors='replace')
     body = text.split('[Desktop Action')[0]
-    if re.search(r'^NoDisplay\s*=\s*true', body, re.M | re.I):
+    if not include_hidden and re.search(r'^NoDisplay\s*=\s*true', body, re.M | re.I):
       continue
     def field(key):
       m = re.search(rf'^{key}\s*=\s*(.+)$', body, re.M)
@@ -150,13 +155,21 @@ def build_entry(launcher, package, name, icon_path):
   }
 
 
-def sync(remove=False):
+def sync(remove=False, include_hidden=False):
   launcher = str(Path(__file__).resolve().parent / 'deckdroid')
-  apps = list(desktop_entries())
+  apps = list(desktop_entries(include_hidden))
   if not apps and not remove:
-    print('No Android apps found.\n'
-          'Start waydroid at least once so it can generate desktop entries:\n'
-          '  deckdroid start', file=sys.stderr)
+    hidden = len(list(desktop_entries(True)))
+    if hidden:
+      print(f'No user-installed Android apps found ({hidden} stock apps are\n'
+            'hidden by waydroid). Install something first:\n'
+            '  deckdroid app install some.apk\n'
+            'or include the stock apps with:\n'
+            '  deckdroid shortcuts sync --all', file=sys.stderr)
+    else:
+      print('No Android apps found.\n'
+            'Start waydroid at least once so it can generate desktop entries:\n'
+            '  deckdroid start', file=sys.stderr)
     return 1
 
   configs = list(steam_user_dirs())
@@ -204,10 +217,13 @@ def sync(remove=False):
 
 
 if __name__ == '__main__':
-  cmd = sys.argv[1] if len(sys.argv) > 1 else 'sync'
+  args = sys.argv[1:]
+  include_hidden = '--all' in args
+  args = [a for a in args if a != '--all']
+  cmd = args[0] if args else 'sync'
   if cmd == 'sync':
-    sys.exit(sync())
+    sys.exit(sync(include_hidden=include_hidden))
   if cmd == 'remove':
     sys.exit(sync(remove=True))
-  print('usage: deckdroid shortcuts {sync|remove}', file=sys.stderr)
+  print('usage: deckdroid shortcuts {sync [--all]|remove}', file=sys.stderr)
   sys.exit(2)
