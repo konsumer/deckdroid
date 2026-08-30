@@ -221,10 +221,14 @@ case "${1:-}" in
     tmp=$(mktemp)
     waydroid shell -- cat /system/usr/keylayout/Generic.kl > "$tmp" 2>/dev/null
     [ -s "$tmp" ] || { rm -f "$tmp"; dd_die "could not read Generic.kl (is Android running?)"; }
-    sed -i -e "s/^key 1  *[A-Z_]*/key 1     BACK/" \
-           -e "s/^key 59  *[A-Z_]*/key 59    HOME/" \
-           -e "s/^key 60  *[A-Z_]*/key 60    APP_SWITCH/" \
-           -e "s/^key 61  *[A-Z_]*/key 61    MENU/" "$tmp"
+    # Replace the whole line, not just a [A-Z_] run: the originals are F1/F2/F3
+    # and a partial match leaves the digit behind ("HOME1"). Whole-line
+    # replacement is also idempotent, so re-running keymap is safe even though
+    # it reads back its own overlay.
+    sed -i -e "s/^key 1[[:space:]].*/key 1     BACK/" \
+           -e "s/^key 59[[:space:]].*/key 59    HOME/" \
+           -e "s/^key 60[[:space:]].*/key 60    APP_SWITCH/" \
+           -e "s/^key 61[[:space:]].*/key 61    MENU/" "$tmp"
     for entry in "59 HOME" "60 APP_SWITCH" "61 MENU"; do
       set -- $entry
       grep -qE "^key $1 " "$tmp" || printf "key %-5s %s\n" "$1" "$2" >> "$tmp"
