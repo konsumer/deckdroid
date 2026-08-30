@@ -171,23 +171,23 @@ session_running() { waydroid status 2>/dev/null | grep -qi 'Session:[[:space:]]*
 cmd_start() {
   dd_require_binder
   dd_have_bundle || dd_die "not installed; run 'deckdroid install'"
-  if session_running; then
-    printf '%s' "$display" > "$marker" 2>/dev/null || true
-    dd_info "already running"
-    return 0
-  fi
 
-  local display
+  local display marker
+  marker=$DECKDROID_ROOT/.session-display
   display=$(dd_wayland_display) || dd_die \
     "no Wayland display found in ${XDG_RUNTIME_DIR:-/run/user/$(id -u)}.
   Run this from a Deck session (Desktop or Game Mode), not a bare ssh shell."
   export WAYLAND_DISPLAY=$display
   export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 
+  if session_running && [ "$(cat "$marker" 2>/dev/null)" = "$display" ]; then
+    dd_info "already running"
+    return 0
+  fi
+
   # A session started in Desktop Mode is bound to kwin's socket, which no longer
   # exists once you switch to Game Mode. Restart it rather than handing the app
   # a dead display.
-  local marker=$DECKDROID_ROOT/.session-display
   if session_running && [ "$(cat "$marker" 2>/dev/null)" != "$display" ]; then
     dd_info "display changed to $display; restarting session"
     waydroid session stop 2>/dev/null || true
