@@ -26,12 +26,13 @@ dd_require_sudo() {
 # --- install ---------------------------------------------------------------
 
 cmd_install() {
-  local size=32G target=$DECKDROID_ROOT local_bundle=
+  local size=32G target=$DECKDROID_ROOT local_bundle= flavor=${DECKDROID_FLAVOR:-lineage}
   while [ $# -gt 0 ]; do
     case $1 in
       --root) target=$2; shift 2 ;;
       --size) size=$2; shift 2 ;;
       --bundle) local_bundle=$(realpath "$2"); shift 2 ;;
+      --flavor) flavor=$2; shift 2 ;;
       --no-images) DECKDROID_SKIP_IMAGES=1; shift ;;
       *) dd_die "unknown option: $1" ;;
     esac
@@ -45,7 +46,8 @@ cmd_install() {
   # Persist the location so every later command and the root helper agree.
   local cfgdir=${XDG_CONFIG_HOME:-$HOME/.config}/deckdroid
   mkdir -p "$cfgdir"
-  printf 'DECKDROID_ROOT=%q\n' "$target" > "$cfgdir/config"
+  { printf 'DECKDROID_ROOT=%q\n' "$target"
+    printf 'DECKDROID_FLAVOR=%q\n' "$flavor"; } > "$cfgdir/config"
   DECKDROID_ROOT=$target DD_BUNDLE=$target/bundle DD_IMAGE=$target/data.img
 
   local tmp; tmp=$(mktemp -d)
@@ -78,7 +80,7 @@ cmd_install() {
   if [ "${DECKDROID_SKIP_IMAGES:-0}" = "1" ]; then
     dd_warn "skipping Android image download (--no-images)"
   else
-    cmd_images
+    cmd_images --flavor "$flavor"
     dd_info "initialising waydroid"
     as_root init
   fi
@@ -108,6 +110,31 @@ cmd_privileged_setup() {
 # painful for 1GB over SourceForge's mirrors. Fetch them here instead, against
 # SourceForge's direct download host, with -C - resume and a checksum from the
 # OTA manifest, then hand waydroid finished images so it skips its downloader.
+# Android TV images from WayDroid-ATV. Same shape as the official ones (a
+# system zip and a vendor zip, each containing one .img), so they drop straight
+# into the same fetch path. These builds also carry libhoudini, Widevine L3 and
+# VA-API, which the stock LineageOS images do not.
+ATV_REPO=${ATV_REPO:-WayDroid-ATV/waydroid-androidtv-builds}
+
+atv_pick() { # variant(VANILLA|GAPPS|MAINLINE) role(system|vendor)
+  curl -fsSL "https://api.github.com/repos/$ATV_REPO/releases/latest" \
+    | python3 -c '
+import json, sys
+variant, role = sys.argv[1], sys.argv[2]
+assets = json.load(sys.stdin)["assets"]
+for a in assets:
+    name = a["name"]
+    if "waydroid_tv_x86_64" not in name or not name.endswith(".zip"):
+        continue
+    if variant not in name or not name.endswith("-%s.zip" % role):
+        continue
+    digest = (a.get("digest") or "").split(":")[-1]
+    print("\t".join([a["browser_download_url"], name, digest, str(a["size"])]))
+    break
+else:
+    sys.exit("no %s %s asset for waydroid_tv_x86_64" % (variant, role))' "$1" "$2"
+}
+
 ota_pick() { # channel romtype -> "url<TAB>filename<TAB>sha256<TAB>size"
   curl -fsSL "https://ota.waydro.id/$1/waydroid_x86_64/$2.json" | python3 -c '
 import json, sys
@@ -163,18 +190,79 @@ fetch_one() { # url file sha256 size dest.img
 }
 
 cmd_images() {
+  local flavor=${DECKDROID_FLAVOR:-lineage} force=0
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --flavor) flavor=$2; shift 2 ;;
+      --force) force=1; shift ;;
+      *) dd_die "unknown option: $1" ;;
+    esac
+  done
+  case $flavor in
+    lineage|tv|tv-gapps) ;;
+    *) dd_die "unknown flavor '$flavor' (lineage, tv, tv-gapps)" ;;
+  esac
+
   mkdir -p "$DECKDROID_ROOT/images"
-  if [ -f "$DECKDROID_ROOT/images/system.img" ] && [ -f "$DECKDROID_ROOT/images/vendor.img" ]; then
-    dd_info "android images already present"
+  local have=$DECKDROID_ROOT/images/.flavor
+  if [ "$force" = 0 ] \
+     && [ -f "$DECKDROID_ROOT/images/system.img" ] \
+     && [ -f "$DECKDROID_ROOT/images/vendor.img" ] \
+     && [ "$(cat "$have" 2>/dev/null)" = "$flavor" ]; then
+    dd_info "android images already present ($flavor)"
     return 0
   fi
+
   local sys ven
-  sys=$(ota_pick system/lineage VANILLA) || dd_die "could not reach the waydroid OTA server"
-  ven=$(ota_pick vendor MAINLINE) || dd_die "could not reach the waydroid OTA server"
+  case $flavor in
+    lineage)
+      sys=$(ota_pick system/lineage VANILLA) || dd_die "could not reach the waydroid OTA server"
+      ven=$(ota_pick vendor MAINLINE) || dd_die "could not reach the waydroid OTA server"
+      ;;
+    tv)
+      dd_info "using Android TV images from $ATV_REPO"
+      sys=$(atv_pick VANILLA system) || dd_die "could not list $ATV_REPO releases"
+      ven=$(atv_pick MAINLINE vendor) || dd_die "could not list $ATV_REPO releases"
+      ;;
+    tv-gapps)
+      dd_info "using Android TV images (with GApps) from $ATV_REPO"
+      sys=$(atv_pick GAPPS system) || dd_die "could not list $ATV_REPO releases"
+      ven=$(atv_pick MAINLINE vendor) || dd_die "could not list $ATV_REPO releases"
+      ;;
+  esac
   # shellcheck disable=SC2086
   IFS=$'\t' read -r u f h z <<<"$sys"; fetch_one "$u" "$f" "$h" "$z" "$DECKDROID_ROOT/images/system.img"
   IFS=$'\t' read -r u f h z <<<"$ven"; fetch_one "$u" "$f" "$h" "$z" "$DECKDROID_ROOT/images/vendor.img"
-  dd_info "images ready in $DECKDROID_ROOT/images"
+  local previous
+  previous=$(cat "$have" 2>/dev/null || true)
+  printf '%s' "$flavor" > "$have"
+  dd_info "images ready in $DECKDROID_ROOT/images ($flavor)"
+  if [ -n "$previous" ] && [ "$previous" != "$flavor" ]; then
+    dd_warn "images changed from $previous to $flavor.
+  Android must be re-initialised against them:  deckdroid reinit
+  Data written by the old build may not be compatible; 'deckdroid reinit --wipe'
+  starts from a clean data image."
+  fi
+}
+
+# Re-run waydroid init against whatever images are currently in place. Needed
+# after switching flavors, since the config records which build it was set up
+# for.
+cmd_reinit() {
+  local wipe=0
+  [ "${1:-}" = "--wipe" ] && wipe=1
+  dd_have_bundle || dd_die "not installed; run 'deckdroid install'"
+  cmd_stop >/dev/null 2>&1 || true
+  if [ "$wipe" = 1 ]; then
+    dd_warn "wiping the Android data image at $DD_IMAGE"
+    rm -f "$DD_IMAGE"
+    dd_info "creating a fresh data image"
+    truncate -s "${DECKDROID_IMAGE_SIZE:-32G}" "$DD_IMAGE"
+    mkfs.ext4 -q -F -L waydroid "$DD_IMAGE"
+  fi
+  dd_info "re-initialising waydroid"
+  as_root init -f
+  dd_info "done; 'deckdroid start' or launch a shortcut"
 }
 
 # --- lifecycle -------------------------------------------------------------
@@ -558,7 +646,8 @@ cmd_doctor() {
 
 case "${1:-}" in
   install) shift; cmd_install "$@" ;;
-  images) cmd_images ;;
+  images) shift; cmd_images "$@" ;;
+  reinit) shift; cmd_reinit "$@" ;;
   start) cmd_start ;;
   stop) cmd_stop ;;
   restart) cmd_stop; cmd_start ;;
@@ -575,8 +664,9 @@ case "${1:-}" in
     cat <<USAGE
 deckdroid - Waydroid on the Steam Deck, installed wherever you want
 
-  install [--root DIR] [--size 32G]   download and set up
-  images                              (re)fetch the Android images only
+  install [--root DIR] [--size 32G] [--flavor lineage|tv|tv-gapps]
+  images [--flavor F] [--force]       (re)fetch the Android images only
+  reinit [--wipe]                     re-init Android after changing images
   start | stop | restart | status     manage the service
   ui                                  full Android UI
   launch <package>                    run one app, stop when it exits
