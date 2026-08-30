@@ -132,6 +132,25 @@ def install_art(grid, appid, icon):
 
 # --- sync ------------------------------------------------------------------
 
+def tv_entry(launcher, icon_path):
+  """A shortcut that opens the Android TV interface itself.
+
+  Per-app shortcuts are convenient, but a TV build is meant to be browsed --
+  so offer the launcher too, and let the user pick either from Steam.
+  """
+  entry = build_entry(launcher, '', 'Android TV', icon_path)
+  entry['LaunchOptions'] = 'ui'
+  entry['tags'] = {'0': TAG, '1': 'deckdroid-tv'}
+  return entry
+
+
+def waydroid_icon(launcher):
+  """The Waydroid logo shipped in the bundle, used for the TV entry."""
+  root = Path(launcher).resolve().parent.parent
+  icon = root / 'bundle/usr/share/icons/hicolor/512x512/apps/waydroid.png'
+  return str(icon) if icon.is_file() else None
+
+
 def build_entry(launcher, package, name, icon_path):
   exe = f'"{launcher}"'
   return {
@@ -163,7 +182,9 @@ def build_entry(launcher, package, name, icon_path):
 def sync(remove=False, include_hidden=False):
   launcher = str(Path(__file__).resolve().parent / 'deckdroid')
   apps = list(desktop_entries(include_hidden))
-  if not apps and not remove:
+  # The TV entry does not depend on any app being installed, so an empty app
+  # list is only a problem if we would end up writing nothing at all.
+  if not apps and not remove and not Path(launcher).is_file():
     hidden = len(list(desktop_entries(True)))
     if hidden:
       print(f'No user-installed Android apps found ({hidden} stock apps are\n'
@@ -205,6 +226,13 @@ def sync(remove=False, include_hidden=False):
         art = install_art(grid, shortcut_appid(entry['Exe'], name), icon)
         entry['icon'] = art or ''
         added.append(entry)
+
+      # Always offer the TV interface alongside the per-app entries.
+      tv = tv_entry(launcher, None)
+      art = install_art(grid, shortcut_appid(tv['Exe'], tv['AppName']),
+                        waydroid_icon(launcher))
+      tv['icon'] = art or ''
+      added.append(tv)
 
     merged = kept + added
     root['shortcuts'] = {str(i): v for i, v in enumerate(merged)}

@@ -64,6 +64,27 @@ check('empty strings survive', m.vdf_load(blob)['shortcuts']['0']['ShortcutPath'
 check('launch options carry the package',
       entry['LaunchOptions'] == 'launch org.lineageos.jelly')
 
+# The TV entry must survive alongside per-app entries and be distinguishable.
+tv = m.build_entry('/home/deck/Android_Waydroid/bin/deckdroid', '', 'Android TV', None)
+tv['LaunchOptions'] = 'ui'
+tv['tags'] = {'0': m.TAG, '1': 'deckdroid-tv'}
+doc2 = {'shortcuts': {'0': entry, '1': foreign, '2': tv}}
+back2 = m.vdf_load(m.vdf_dump(doc2))
+
+check('tv entry round-trips', back2 == doc2)
+check('tv entry launches the interface, not a package',
+      back2['shortcuts']['2']['LaunchOptions'] == 'ui')
+check('tv entry is tagged as ours',
+      m.TAG in back2['shortcuts']['2']['tags'].values())
+check('tv entry is distinguishable from app entries',
+      'deckdroid-tv' in back2['shortcuts']['2']['tags'].values()
+      and 'deckdroid-tv' not in (back2['shortcuts']['0'].get('tags') or {}).values())
+check('tv entry has its own appid',
+      back2['shortcuts']['2']['appid'] != back2['shortcuts']['0']['appid'])
+check('removing ours would take the tv entry too',
+      len([v for v in back2['shortcuts'].values()
+           if m.TAG not in (v.get('tags') or {}).values()]) == 1)
+
 print()
 if failures:
   print(f'{len(failures)} failed: {failures}')

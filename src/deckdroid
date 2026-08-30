@@ -26,7 +26,7 @@ dd_require_sudo() {
 # --- install ---------------------------------------------------------------
 
 cmd_install() {
-  local size=32G target=$DECKDROID_ROOT local_bundle= flavor=${DECKDROID_FLAVOR:-lineage}
+  local size=32G target=$DECKDROID_ROOT local_bundle= flavor=${DECKDROID_FLAVOR:-tv}
   while [ $# -gt 0 ]; do
     case $1 in
       --root) target=$2; shift 2 ;;
@@ -190,7 +190,7 @@ fetch_one() { # url file sha256 size dest.img
 }
 
 cmd_images() {
-  local flavor=${DECKDROID_FLAVOR:-lineage} force=0
+  local flavor=${DECKDROID_FLAVOR:-tv} force=0
   while [ $# -gt 0 ]; do
     case $1 in
       --flavor) flavor=$2; shift 2 ;;
@@ -371,7 +371,9 @@ cmd_status() {
 # while Android renders to the outer compositor as a window gamescope will not
 # associate with the Steam shortcut -- a spinning Steam logo and no picture.
 cmd_run_app() {
-  local pkg=$1 i
+  # An empty package means: bring up the Android TV interface itself and stay
+  # there, rather than opening one app.
+  local pkg=${1:-} i
   # The compositor's reaper runs as the user and cannot kill our root-owned
   # poller ("Failed to kill process: Operation not permitted"), so gamescope
   # would never finish tearing down and would leak an instance per launch.
@@ -446,6 +448,14 @@ cmd_run_app() {
   waydroid show-full-ui >>"$DECKDROID_ROOT/session.log" 2>&1 || true
   sleep 3
 
+  if [ -z "$pkg" ]; then
+    # The TV interface is already what show-full-ui put on screen. Hold the
+    # compositor open until the session ends or Steam stops the shortcut.
+    dd_info "Android TV interface ready; stop it from the Steam menu to exit"
+    while session_running; do sleep 5; done
+    return 0
+  fi
+
   dd_info "launching $pkg"
   local attempt
   for attempt in 1 2 3; do
@@ -469,8 +479,7 @@ cmd_run_app() {
 }
 
 cmd_launch() {
-  local pkg=${1:-}
-  [ -n "$pkg" ] || dd_die "usage: deckdroid launch <package>"
+  local pkg=${1:-}   # empty is legitimate: it means the TV interface
   # Steam discards a shortcut's stdout, so a Game Mode failure would otherwise
   # be invisible. Keep a copy of everything this run prints.
   exec > >(tee -a "$DECKDROID_ROOT/launch.log") 2>&1
@@ -652,14 +661,18 @@ case "${1:-}" in
   stop) cmd_stop ;;
   restart) cmd_stop; cmd_start ;;
   status) cmd_status ;;
-  launch) shift; cmd_launch "$@" ;;
+  launch)
+    shift
+    [ $# -gt 0 ] || dd_die "usage: deckdroid launch <package>"
+    cmd_launch "$@"
+    ;;
   run-app) shift; cmd_run_app "$@" ;;
   app) shift; cmd_app "$@" ;;
   refresh) cmd_refresh ;;
   shortcuts) shift; exec "$(dirname "$(realpath "$0")")/deckdroid-shortcuts" "$@" ;;
   kill) cmd_kill ;;
   doctor) cmd_doctor ;;
-  ui) cmd_start; cage -- waydroid show-full-ui ;;
+  ui) cmd_launch "" ;;
   *)
     cat <<USAGE
 deckdroid - Waydroid on the Steam Deck, installed wherever you want
