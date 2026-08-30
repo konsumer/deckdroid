@@ -305,16 +305,21 @@ cmd_run_app() {
     waydroid prop set persist.waydroid.multi_windows false || true
   fi
 
-  # Something has to give the compositor an actual surface. With multi_windows
-  # on, waydroid only surfaces app windows -- never the launcher -- so the
-  # compositor had nothing to draw and showed black. show-full-ui takes one
-  # full-screen surface, and the app is then launched onto it.
-  dd_info "attaching Android display"
-  waydroid show-full-ui >>"$DECKDROID_ROOT/session.log" 2>&1 &
-  sleep 6   # let the surface map before putting the app on top of it
-
+  # Waydroid decides what to present from the "waydroid.active_apps" property:
+  # set to a package, only that package's windows are shown; set to "Waydroid",
+  # the whole Android display is. `app launch` sets the former and
+  # `show-full-ui` sets the latter, so the order matters and is not obvious.
+  #
+  # Launching last would pin the display to one package, and anything the app
+  # puts up from a *different* package -- notably the first-run permission
+  # dialog, which is com.android.permissioncontroller -- would render nothing
+  # at all. That is the black screen. So launch first, then widen back to the
+  # full display.
   dd_info "launching $pkg"
   waydroid app launch "$pkg" || true
+  sleep 3
+  dd_info "attaching Android display"
+  waydroid show-full-ui >>"$DECKDROID_ROOT/session.log" 2>&1 || true
 
   # Never block forever. If the app never gets a process, give up and exit
   # non-zero so Steam drops the "running" state instead of leaving a shortcut
