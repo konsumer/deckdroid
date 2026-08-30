@@ -590,6 +590,26 @@ cmd_launch() {
   if [ "${DECKDROID_KEEP_RUNNING:-0}" != "1" ]; then cmd_stop; fi
 }
 
+# waydroid only writes .desktop files and icons for installed apps when the
+# session's user monitor does its startup pass, so a freshly installed APK has
+# no icon and no Steam entry until the session is restarted. Stale entries are
+# cleared first: after switching images or wiping data, the old build's files
+# linger and would otherwise become Steam shortcuts for apps that no longer
+# exist.
+cmd_refresh() {
+  session_running || dd_die "not running"
+  local apps=${XDG_DATA_HOME:-$HOME/.local/share}/applications
+  dd_info "clearing stale app entries"
+  rm -f "$apps"/waydroid.*.desktop
+  dd_info "refreshing app list"
+  systemctl --user restart deckdroid-session
+  local i
+  for i in $(seq 1 120); do session_running && break; sleep 0.5; done
+  for i in $(seq 1 90); do waydroid app list >/dev/null 2>&1 && break; sleep 2; done
+  sleep 10   # give the user monitor time to write desktop files and icons
+  dd_info "done"
+}
+
 cmd_app() {
   cmd_start
   case "${1:-}" in

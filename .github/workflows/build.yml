@@ -20,6 +20,18 @@ jobs:
       - name: Unit tests
         run: python3 tests/test_shortcuts.py
 
+      - name: Every dispatched function and helper action exists
+        run: |
+          fail=0
+          for f in $(grep -oE 'cmd_[a-z_]+' src/deckdroid | sort -u); do
+            grep -q "^$f() {" src/deckdroid || { echo "undefined: $f"; fail=1; }
+          done
+          for a in $(grep -oE 'as_root [a-z-]+' src/deckdroid | awk '{print $2}' | sort -u); do
+            grep -q "^  $a)" src/deckdroid-root || { echo "no helper action: $a"; fail=1; }
+          done
+          grep -q 'waydroid session start' src/deckdroid || { echo "launcher never starts a session"; fail=1; }
+          exit $fail
+
       - name: Shell syntax
         run: |
           for f in src/deckdroid src/deckdroid-root src/deckdroid-env install.sh build/*.sh; do
