@@ -44,35 +44,39 @@ msg "Resolving binary packages into an alternate root"
 sudo pacman -r "$PKGROOT" -Sy --noconfirm --dbpath "$PKGROOT/var/lib/pacman" \
   --hookdir "$PKGROOT/nonexistent-hooks" "${BINARY_PKGS[@]}"
 
-msg "Pruning packages the Deck already ships"
-# Anything present in SteamOS is a liability to ship: bundling a second copy of
-# mesa/libdrm/systemd would shadow the host's GPU stack over LD_LIBRARY_PATH.
-mapfile -t installed < <(sudo pacman -r "$PKGROOT" --dbpath "$PKGROOT/var/lib/pacman" -Qq)
-kept=(); dropped=0
+msg "Selecting packages the Deck does not already ship"
+# Anything present in SteamOS is a liability to ship: a second copy of
+# mesa/libdrm/glibc would shadow the host's own stack over LD_LIBRARY_PATH.
+# So rather than deleting what we do not want, copy in only what we do -- that
+# way nothing can survive by accident.
+pac() { sudo pacman -r "$PKGROOT" --dbpath "$PKGROOT/var/lib/pacman" "$@"; }
+
+mapfile -t installed < <(pac -Qq)
+kept=()
 for pkg in "${installed[@]}"; do
-  if grep -qx "$pkg" "$DECK_LIST"; then
-    # Delete only this package's files, leaving shared dirs alone.
-    while read -r f; do
-      [ -f "$PKGROOT/$f" ] && sudo rm -f "$PKGROOT/$f"
-    done < <(sudo pacman -r "$PKGROOT" --dbpath "$PKGROOT/var/lib/pacman" -Qlq "$pkg" | sed 's|^/||')
-    dropped=$((dropped + 1))
-  else
-    kept+=("$pkg")
-  fi
+  grep -qx "$pkg" "$DECK_LIST" || kept+=("$pkg")
 done
-echo "kept ${#kept[@]} packages, dropped $dropped already on the Deck"
+echo "bundling ${#kept[@]} of ${#installed[@]} packages; SteamOS already has the rest"
 printf '%s\n' "${kept[@]}" > "$STAGE/bundled-packages.txt"
 
-sudo rm -rf "$PKGROOT/var/lib/pacman" "$PKGROOT/var/cache"
-# Copy as root: some files are setuid/root-only (dbus-daemon-launch-helper),
-# then hand the whole bundle back so the from-source builds can write into it.
-for d in usr/bin usr/lib usr/share usr/libexec; do
-  [ -d "$PKGROOT/$d" ] && { mkdir -p "$BUNDLE/$(dirname $d)"; sudo cp -a "$PKGROOT/$d" "$BUNDLE/$d"; }
+msg "Copying their files into the bundle"
+for pkg in "${kept[@]}"; do
+  while read -r f; do
+    case "$f" in
+      */) continue ;;                                  # directory entry
+      /usr/share/man/*|/usr/share/doc/*|/usr/share/info/*|/usr/share/locale/*) continue ;;
+      /usr/bin/*|/usr/lib/*|/usr/libexec/*|/usr/share/*) ;;
+      *) continue ;;                                   # nothing outside /usr relocates
+    esac
+    [ -e "$PKGROOT$f" ] || [ -L "$PKGROOT$f" ] || continue
+    mkdir -p "$BUNDLE$(dirname "$f")"
+    sudo cp -a "$PKGROOT$f" "$BUNDLE$f"
+  done < <(pac -Qlq "$pkg")
 done
+
 sudo chown -R "$(id -u):$(id -g)" "$BUNDLE"
-# Nothing in a relocated user-owned bundle may keep setuid bits, and every file
-# has to stay readable by whoever unpacks it (dbus ships a 4750 root-only
-# helper that would otherwise be unreadable in the tarball).
+# Everything must stay readable by whoever unpacks it, and a user-owned
+# relocated bundle has no business carrying setuid bits.
 sudo chmod -R u+rwX,go-s "$BUNDLE"
 
 # ---------------------------------------------------------------------------
