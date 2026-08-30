@@ -11,6 +11,29 @@ need it.
   play something else.
 - **One Steam entry per Android app**, reusing the app's own icon.
 
+## Android images
+
+Defaults to the **Android TV** builds from
+[WayDroid-ATV](https://github.com/WayDroid-ATV/waydroid-androidtv-builds):
+LineageOS 23 (Android 16) for `waydroid_tv_x86_64`, with libhoudini ARM
+translation, Widevine L3 and VA-API — all of which matter more on a TV build
+than the stock phone images.
+
+```bash
+deckdroid install --flavor tv          # Android TV, no GApps (default)
+deckdroid install --flavor tv-gapps    # Android TV with GApps preinstalled
+deckdroid install --flavor lineage     # stock phone LineageOS from waydroid's OTA
+```
+
+Switching later:
+
+```bash
+deckdroid images --flavor tv --force
+deckdroid reinit --wipe                # data from another build rarely survives
+```
+
+Assets are checksummed against the release's published sha256 either way.
+
 ## Install
 
 ```bash
@@ -30,14 +53,17 @@ deckdroid start | stop | status       # manage the service
 deckdroid ui                          # the full Android UI
 deckdroid app install some.apk        # installs, then refreshes icons
 deckdroid shortcuts sync              # one Steam entry per app; restart Steam after
-deckdroid shortcuts sync --all        # include LineageOS's stock apps too
+deckdroid shortcuts sync --all        # include the stock apps too
 deckdroid shortcuts remove            # take ours back out
 deckdroid launch org.fdroid.fdroid
 deckdroid refresh                     # regenerate icons and desktop entries
 deckdroid doctor                      # what is wrong, if anything
 ```
 
-`shortcuts sync` only picks up apps you installed: waydroid marks LineageOS's
+`shortcuts sync` also adds an **Android TV** entry that opens the TV interface
+itself, so you can either pick an individual app from Steam or just launch the
+launcher and browse from the couch. Beyond that it only picks up apps you
+installed: waydroid marks LineageOS's
 stock apps (Clock, Contacts, ...) hidden, and a Steam library is nicer without
 them. Use `--all` if you want them anyway. Your own hand-made non-Steam
 shortcuts are never touched, and `shortcuts.vdf` is backed up before the first
