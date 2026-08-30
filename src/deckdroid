@@ -291,39 +291,15 @@ cmd_run_app() {
   trap 'as_root kill-helpers >/dev/null 2>&1 || true' EXIT INT TERM
   dd_info "session inside compositor on ${WAYLAND_DISPLAY:-unset}"
 
-  # cage's X11 backend opens a fixed 1024x768 window, and Android reads its
-  # resolution from the compositor once, at session start -- resizing later
-  # leaves Android at 1024x768 and letterboxed on the Deck's 1280x800 panel.
-  # So stretch the window to the full screen *before* the session starts.
-  # Our parent process is cage itself, which is how we find its window.
+  # The parent sizes the compositor window to the screen before we start the
+  # session; Android reads its resolution from the compositor exactly once, at
+  # session start. Wait for that to be done rather than racing it.
   if [ -n "${DECKDROID_OUTER_DISPLAY:-}" ]; then
-    local geom w h wid
-    geom=$(DISPLAY=$DECKDROID_OUTER_DISPLAY xdpyinfo 2>/dev/null \
-           | awk '/dimensions:/ {print $2; exit}')
-    w=${geom%x*}; h=${geom#*x}
-    case "${w:-}:${h:-}" in
-      *[!0-9:]*|:*|*:) w=""; h="" ;;
-    esac
-    if [ -n "$w" ]; then
-      for i in $(seq 1 40); do
-        wid=$(DISPLAY=$DECKDROID_OUTER_DISPLAY xdotool search --pid "$PPID" 2>/dev/null | tail -1)
-        [ -n "$wid" ] && break
-        sleep 0.5
-      done
-      if [ -n "$wid" ]; then
-        DISPLAY=$DECKDROID_OUTER_DISPLAY xdotool windowsize "$wid" "$w" "$h" 2>/dev/null || true
-        dd_info "sized compositor window to ${w}x${h}"
-        sleep 1
-      else
-        dd_warn "could not find the compositor window; Android may be letterboxed"
-      fi
-    fi
+    for i in $(seq 1 60); do
+      [ -f "$DECKDROID_ROOT/.compositor-ready" ] && break
+      sleep 0.5
+    done
   fi
-  waydroid session start >"$DECKDROID_ROOT/session.log" 2>&1 &
-  for i in $(seq 1 120); do session_running && break; sleep 0.5; done
-  session_running || { dd_warn "session did not start; see $DECKDROID_ROOT/session.log"; return 1; }
-
-  for i in $(seq 1 90); do waydroid app list >/dev/null 2>&1 && break; sleep 2; done
 
   # multi_windows is a *persisted* Android property living in the data image,
   # so it outranks anything written to waydroid_base.prop. It also has to be
@@ -453,11 +429,39 @@ cmd_launch() {
   # Steam believe the shortcut is still running and silently refuse to start it
   # again, which looks exactly like "nothing happens". Recording it also means
   # cleanup never has to guess which gamescope is ours.
+  rm -f "$DECKDROID_ROOT/.compositor-ready"
   "${compositor[@]}" "$(realpath "$0")" run-app "$pkg" &
   local comp_pid=$!
   echo "$comp_pid" > "$DECKDROID_ROOT/compositor.pid"
+
+  # cage's X11 backend opens a fixed 1024x768 window, and Android takes its
+  # resolution from the compositor once, at session start -- resizing later
+  # leaves it letterboxed on the Deck's 1280x800 panel. Do it here, in the
+  # parent, which is the process that can reach the outer X display, and only
+  # then let run-app proceed. Every step is best-effort: a failure here should
+  # cost the right resolution, never the launch.
+  if [ -n "${DECKDROID_OUTER_DISPLAY:-}" ]; then
+    local geom gw gh wid
+    geom=$( { xdpyinfo 2>/dev/null || true; } | awk '/dimensions:/ {print $2; exit}' )
+    gw=${geom%x*}; gh=${geom#*x}
+    case "${gw:-}:${gh:-}" in *[!0-9:]*|:*|*:) gw=""; gh="" ;; esac
+    if [ -n "$gw" ]; then
+      for i in $(seq 1 40); do
+        wid=$( { xdotool search --pid "$comp_pid" 2>/dev/null || true; } | tail -1 )
+        [ -n "$wid" ] && break
+        sleep 0.5
+      done
+      if [ -n "${wid:-}" ]; then
+        xdotool windowsize "$wid" "$gw" "$gh" 2>/dev/null || true
+        dd_info "sized compositor window to ${gw}x${gh}"
+      else
+        dd_warn "could not find the compositor window; Android may be letterboxed"
+      fi
+    fi
+  fi
+  touch "$DECKDROID_ROOT/.compositor-ready"
   wait "$comp_pid" || true
-  rm -f "$DECKDROID_ROOT/compositor.pid"
+  rm -f "$DECKDROID_ROOT/compositor.pid" "$DECKDROID_ROOT/.compositor-ready"
   if [ "${DECKDROID_KEEP_RUNNING:-0}" != "1" ]; then cmd_stop; fi
 }
 
