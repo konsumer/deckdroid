@@ -13,11 +13,13 @@ as_root() { sudo -n "$DD_ROOT_HELPER" "$@" 2>/dev/null || sudo "$DD_ROOT_HELPER"
 # --- install ---------------------------------------------------------------
 
 cmd_install() {
-  local size=32G target=$DECKDROID_ROOT
+  local size=32G target=$DECKDROID_ROOT local_bundle=
   while [ $# -gt 0 ]; do
     case $1 in
       --root) target=$2; shift 2 ;;
       --size) size=$2; shift 2 ;;
+      --bundle) local_bundle=$(realpath "$2"); shift 2 ;;
+      --no-images) DECKDROID_SKIP_IMAGES=1; shift ;;
       *) dd_die "unknown option: $1" ;;
     esac
   done
@@ -33,12 +35,17 @@ cmd_install() {
   printf 'DECKDROID_ROOT=%q\n' "$target" > "$cfgdir/config"
   DECKDROID_ROOT=$target DD_BUNDLE=$target/bundle DD_IMAGE=$target/data.img
 
-  dd_info "downloading bundle"
   local tmp; tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' RETURN
-  curl -fSL --progress-bar -o "$tmp/bundle.tar.gz" "$BUNDLE_URL" \
-    || dd_die "could not download $BUNDLE_URL"
-  if curl -fsSL -o "$tmp/sum" "$BUNDLE_URL.sha256"; then
+  if [ -n "$local_bundle" ]; then
+    dd_info "using local bundle $local_bundle"
+    cp "$local_bundle" "$tmp/bundle.tar.gz"
+  else
+    dd_info "downloading bundle"
+    curl -fSL --progress-bar -o "$tmp/bundle.tar.gz" "$BUNDLE_URL" \
+      || dd_die "could not download $BUNDLE_URL"
+  fi
+  if [ -z "$local_bundle" ] && curl -fsSL -o "$tmp/sum" "$BUNDLE_URL.sha256"; then
     ( cd "$tmp" && sed 's|  .*|  bundle.tar.gz|' sum | sha256sum -c - >/dev/null ) \
       || dd_die "bundle checksum mismatch"
     dd_info "checksum verified"
@@ -53,8 +60,12 @@ cmd_install() {
   fi
 
   cmd_privileged_setup
-  dd_info "fetching Android images (this is the large download)"
-  as_root init
+  if [ "${DECKDROID_SKIP_IMAGES:-0}" = "1" ]; then
+    dd_warn "skipping Android image download (--no-images)"
+  else
+    dd_info "fetching Android images (this is the large download)"
+    as_root init
+  fi
 
   dd_info "installed. 'deckdroid start' to run it."
 }
