@@ -391,32 +391,29 @@ cmd_launch() {
   local i
   for i in $(seq 1 60); do waydroid status >/dev/null 2>&1 && break; sleep 0.5; done
 
-  # Pick the compositor to run Android inside.
+  # Pick the compositor Android will draw into. Both modes use cage; only the
+  # backend differs.
   #
-  # In Game Mode, gamescope manages windows through Xwayland (steamcompmgr on
-  # DISPLAY=:1) and never sees a pure Wayland client, so cage renders into the
-  # void: Steam spins forever waiting for a window that will never be reported.
-  # A nested gamescope instead presents itself as an X window steamcompmgr can
-  # focus, while --expose-wayland gives Android an xdg-shell display to draw on.
-  # In Desktop Mode there is no outer gamescope and cage is the lighter option.
+  # In Game Mode gamescope decides what to show through Xwayland (steamcompmgr
+  # on :1) and never displays a bare Wayland client, so cage on its *Wayland*
+  # backend draws into nothing and Steam spins forever. Run cage on the wlroots
+  # X11 backend instead: it makes a plain X window on the display Steam already
+  # handed us, which steamcompmgr focuses like any game.
+  #
+  # A nested gamescope also works, but Steam raises its on-screen keyboard for
+  # one and not for cage. That was measured rather than guessed: nested
+  # gamescope popped the keyboard with and without --expose-wayland, and even
+  # with its window tagged STEAM_GAME, while a bare `sleep` and cage-on-X11 did
+  # not. Dropping gamescope also drops the Vulkan WSI layer conflict and the
+  # gamescopereaper that kills its parent's entire process group.
   local -a compositor
+  compositor=(cage --)
   if [ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" ] || [ "${display#gamescope-}" != "$display" ]; then
-    local geom w h
-    geom=$(xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2; exit}')
-    w=${geom%x*}; h=${geom#*x}
-    case "${w:-}${h:-}" in ''|*[!0-9]*) w=1280; h=800 ;; esac
-    export SDL_VIDEODRIVER=x11
-    # Steam force-enables the Gamescope WSI Vulkan layer for anything it
-    # launches. That layer assumes swapchains target the *outer* gamescope, so
-    # a nested one trips "CreateSwapchainKHR: Creating swapchain for
-    # non-Gamescope swapchain" and puts up a modal zenity dialog that blocks
-    # rendering entirely. The layer ships its own opt-out; use it.
-    export DISABLE_GAMESCOPE_WSI=1
-    dd_info "game mode: nesting gamescope ${w}x${h} on DISPLAY=${DISPLAY:-unset}"
-    compositor=(gamescope --backend sdl --expose-wayland -w "$w" -h "$h" --)
+    export WLR_BACKENDS=x11
+    export DISPLAY=${DISPLAY:-:1}
+    dd_info "game mode: cage on X11 (DISPLAY=$DISPLAY)"
   else
-    dd_info "desktop mode: using cage on $display"
-    compositor=(cage --)
+    dd_info "desktop mode: cage on $display"
   fi
 
   trap 'cmd_stop; exit 0' INT TERM
@@ -471,7 +468,9 @@ cmd_kill() {
   if [ -n "$ours" ] && kill -0 "$ours" 2>/dev/null; then
     kill -9 "$ours" 2>/dev/null || true
   fi
-  for p in $(pgrep -f -- "--backend sdl --expose-wayland" 2>/dev/null || true); do
+  # Our compositor is a cage we started; SteamOS's session compositor is
+  # gamescope, never cage, so this can never take down the Game Mode session.
+  for p in $(pgrep -x cage 2>/dev/null || true); do
     kill -9 "$p" 2>/dev/null || true
   done
   rm -f "$DECKDROID_ROOT/compositor.pid"
