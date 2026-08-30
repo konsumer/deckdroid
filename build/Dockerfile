@@ -25,7 +25,8 @@ RUN set -eux; \
 RUN pacman -Syuu --noconfirm --overwrite '*' && pacman -Scc --noconfirm || true
 
 RUN pacman -S --noconfirm --needed --overwrite '*' \
-      base-devel git meson ninja cmake pkgconf glib2 glib2-devel python python-pip rsync || true
+      base-devel git meson ninja cmake pkgconf glib2 python python-pip \
+      python-setuptools cython rsync || true
 
 # makepkg refuses to run as root
 RUN useradd -m -G wheel builder \

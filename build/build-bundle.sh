@@ -18,9 +18,13 @@ BUNDLE=$STAGE/bundle
 DECK_LIST=${DECK_LIST:-$SRC_DIR/deck-installed-3.8.16.txt}
 
 # Pinned upstream revisions. Bump deliberately, never float.
-LIBGLIBUTIL_TAG=1.0.79
-LIBGBINDER_TAG=1.1.42
-PYTHON_GBINDER_TAG=1.1.2
+LIBGLIBUTIL_REPO=https://github.com/sailfishos/libglibutil
+LIBGLIBUTIL_TAG=1.0.82
+LIBGBINDER_REPO=https://github.com/mer-hybris/libgbinder
+LIBGBINDER_TAG=1.1.52
+GBINDER_PYTHON_REPO=https://github.com/waydroid/gbinder-python
+GBINDER_PYTHON_TAG=1.1.2
+WAYDROID_REPO=https://github.com/waydroid/waydroid
 WAYDROID_TAG=1.6.3
 
 # Binary packages to pull from the SteamOS repos.
@@ -79,18 +83,20 @@ build_git() { # url tag builder...
 }
 
 # libglibutil and libgbinder are plain Makefiles; they honour prefix + DESTDIR.
-build_git https://github.com/mer-hybris/libglibutil "$LIBGLIBUTIL_TAG" \
+build_git "$LIBGLIBUTIL_REPO" "$LIBGLIBUTIL_TAG" \
   bash -c 'make -j"$(nproc)" release pkgconfig && make install-dev DESTDIR="'"$BUNDLE"'" LIBDIR=/usr/lib'
 export PKG_CONFIG_PATH=$BUNDLE/usr/lib/pkgconfig
 export CFLAGS="-I$BUNDLE/usr/include" LDFLAGS="-L$BUNDLE/usr/lib"
 
-build_git https://github.com/mer-hybris/libgbinder "$LIBGBINDER_TAG" \
+build_git "$LIBGBINDER_REPO" "$LIBGBINDER_TAG" \
   bash -c 'make -j"$(nproc)" release pkgconfig && make install-dev DESTDIR="'"$BUNDLE"'" LIBDIR=/usr/lib'
 
-build_git https://github.com/mer-hybris/python-gbinder "$PYTHON_GBINDER_TAG" \
-  bash -c 'python3 setup.py build && python3 setup.py install --prefix=/usr --root="'"$BUNDLE"'"'
+# gbinder.c is not committed upstream, so the .pyx must be cythonised here.
+# setup.py still imports distutils; setuptools supplies the shim on Python 3.13.
+build_git "$GBINDER_PYTHON_REPO" "$GBINDER_PYTHON_TAG" \
+  bash -c 'python3 setup.py --cython build && python3 setup.py --cython install --prefix=/usr --root="'"$BUNDLE"'"'
 
-build_git https://github.com/waydroid/waydroid "$WAYDROID_TAG" \
+build_git "$WAYDROID_REPO" "$WAYDROID_TAG" \
   bash -c 'make install DESTDIR="'"$BUNDLE"'" PREFIX=/usr USE_SYSTEMD=0 USE_NFTABLES=1'
 
 # Headers and static archives are build-time only.
@@ -106,7 +112,7 @@ msg "Recording provenance"
   echo "python: $(python3 --version | awk '{print $2}')"
   echo "libglibutil: $LIBGLIBUTIL_TAG"
   echo "libgbinder: $LIBGBINDER_TAG"
-  echo "python-gbinder: $PYTHON_GBINDER_TAG"
+  echo "gbinder-python: $GBINDER_PYTHON_TAG"
   echo "waydroid: $WAYDROID_TAG"
 } > "$BUNDLE/BUNDLE-INFO"
 cp "$STAGE/bundled-packages.txt" "$BUNDLE/BUNDLED-PACKAGES"
