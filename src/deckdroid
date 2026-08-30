@@ -277,6 +277,11 @@ cmd_status() {
 # associate with the Steam shortcut -- a spinning Steam logo and no picture.
 cmd_run_app() {
   local pkg=$1 i
+  # The compositor's reaper runs as the user and cannot kill our root-owned
+  # poller ("Failed to kill process: Operation not permitted"), so gamescope
+  # would never finish tearing down and would leak an instance per launch.
+  # Clear the root side ourselves on every exit path.
+  trap 'as_root kill-helpers >/dev/null 2>&1 || true' EXIT INT TERM
   dd_info "session inside compositor on ${WAYLAND_DISPLAY:-unset}"
   waydroid session start >"$DECKDROID_ROOT/session.log" 2>&1 &
   for i in $(seq 1 120); do session_running && break; sleep 0.5; done
@@ -391,13 +396,18 @@ cmd_kill() {
   done
   as_root kill-helpers || true
 
-  # Only ever the compositor we recorded. Never `pkill gamescope`: in Game Mode
-  # that would kill the compositor running the whole Steam session.
-  local ours
+  # Only ever our own compositor. Never `pkill gamescope`: in Game Mode that
+  # would kill the compositor running the entire Steam session. The recorded
+  # pid first, then any nested instance still identifiable by the flags we
+  # start it with -- the session compositor never has those.
+  local ours p
   ours=$(cat "$DECKDROID_ROOT/compositor.pid" 2>/dev/null || true)
   if [ -n "$ours" ] && kill -0 "$ours" 2>/dev/null; then
     kill -9 "$ours" 2>/dev/null || true
   fi
+  for p in $(pgrep -f -- "--backend sdl --expose-wayland" 2>/dev/null || true); do
+    kill -9 "$p" 2>/dev/null || true
+  done
   rm -f "$DECKDROID_ROOT/compositor.pid"
   cmd_stop
 }
