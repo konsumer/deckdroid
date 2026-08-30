@@ -184,15 +184,21 @@ case "${1:-}" in
     # Bring an app to the front WITHOUT touching waydroid.active_apps.
     # `waydroid app launch` sets that property to the package, which narrows
     # the display to one package and hides anything else (permission dialogs,
-    # for instance). Starting the launcher intent directly does not.
+    # for instance).
+    #
+    # `am start` against the resolved component is what actually works here;
+    # `monkey` exits 0 and does nothing, which is worse than failing.
     shift
     pkg=${1:?package required}
-    waydroid shell -- monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 \
-      >/dev/null 2>&1 || true
+    comp=$(waydroid shell -- cmd package resolve-activity --brief \
+             -c android.intent.category.LAUNCHER "$pkg" 2>/dev/null \
+           | tail -1 | tr -d "\r")
+    case "$comp" in
+      */*) waydroid shell -- am start -n "$comp" >/dev/null 2>&1 || true ;;
+      *)   waydroid shell -- monkey -p "$pkg" \
+             -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true ;;
+    esac
     exit 0
-    ;;
-  boot-completed)
-    waydroid shell -- getprop sys.boot_completed 2>/dev/null | tr -d "\r\n" | grep -q "^1$"
     ;;
   app-foreground)
     # True when the package owns the foreground activity.
