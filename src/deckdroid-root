@@ -200,6 +200,12 @@ case "${1:-}" in
     esac
     exit 0
     ;;
+  boot-completed)
+    # Exactly "1" once Android is up. Compare the trimmed last line rather
+    # than pattern-matching the whole stream, which picks up stray output.
+    val=$(waydroid shell -- getprop sys.boot_completed 2>/dev/null | tr -d "\r" | tail -1)
+    [ "$val" = "1" ]
+    ;;
   app-foreground)
     # True when the package owns the foreground activity.
     shift
