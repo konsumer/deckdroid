@@ -1,0 +1,181 @@
+#!/bin/bash
+# deckdroid - run Waydroid on a Steam Deck from a directory you choose.
+set -euo pipefail
+
+. "$(dirname "$(realpath "$0")")/deckdroid-env"
+
+DD_ROOT_HELPER=$(dirname "$(realpath "$0")")/deckdroid-root
+REPO=${DECKDROID_REPO:-konsumer/deckdroid}
+BUNDLE_URL=https://github.com/$REPO/releases/download/latest/deckdroid-bundle-x86_64.tar.gz
+
+as_root() { sudo -n "$DD_ROOT_HELPER" "$@" 2>/dev/null || sudo "$DD_ROOT_HELPER" "$@"; }
+
+# --- install ---------------------------------------------------------------
+
+cmd_install() {
+  local size=32G target=$DECKDROID_ROOT
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --root) target=$2; shift 2 ;;
+      --size) size=$2; shift 2 ;;
+      *) dd_die "unknown option: $1" ;;
+    esac
+  done
+  dd_require_binder
+
+  target=$(realpath -m "$target")
+  dd_info "installing to $target"
+  mkdir -p "$target"
+
+  # Persist the location so every later command and the root helper agree.
+  local cfgdir=${XDG_CONFIG_HOME:-$HOME/.config}/deckdroid
+  mkdir -p "$cfgdir"
+  printf 'DECKDROID_ROOT=%q\n' "$target" > "$cfgdir/config"
+  DECKDROID_ROOT=$target DD_BUNDLE=$target/bundle DD_IMAGE=$target/data.img
+
+  dd_info "downloading bundle"
+  local tmp; tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' RETURN
+  curl -fSL --progress-bar -o "$tmp/bundle.tar.gz" "$BUNDLE_URL" \
+    || dd_die "could not download $BUNDLE_URL"
+  if curl -fsSL -o "$tmp/sum" "$BUNDLE_URL.sha256"; then
+    ( cd "$tmp" && sed 's|  .*|  bundle.tar.gz|' sum | sha256sum -c - >/dev/null ) \
+      || dd_die "bundle checksum mismatch"
+    dd_info "checksum verified"
+  fi
+  rm -rf "$DD_BUNDLE"; mkdir -p "$DD_BUNDLE"
+  tar -C "$DD_BUNDLE" -xzf "$tmp/bundle.tar.gz"
+
+  if [ ! -f "$DD_IMAGE" ]; then
+    dd_info "creating $size data image (sparse, grows as used)"
+    truncate -s "$size" "$DD_IMAGE"
+    mkfs.ext4 -q -F -L waydroid "$DD_IMAGE"
+  fi
+
+  cmd_privileged_setup
+  dd_info "fetching Android images (this is the large download)"
+  as_root init
+
+  dd_info "installed. 'deckdroid start' to run it."
+}
+
+# The only two things that touch system directories. Both live in /etc, which
+# survives SteamOS updates far better than /usr, and both are re-appliable.
+cmd_privileged_setup() {
+  local sudoers=/etc/sudoers.d/deckdroid
+  local dbus=/etc/dbus-1/system.d/id.waydro.Container.conf
+  dd_info "installing sudoers rule and dbus policy (needs your password once)"
+  sudo install -d -m 0755 /etc/sudoers.d /etc/dbus-1/system.d
+  printf '%s ALL=(root) NOPASSWD: %s\n' "$USER" "$DD_ROOT_HELPER" \
+    | sudo tee "$sudoers" >/dev/null
+  sudo chmod 0440 "$sudoers"
+  sudo cp "$DD_BUNDLE/usr/share/dbus-1/system.d/id.waydro.Container.conf" "$dbus"
+  sudo systemctl reload dbus 2>/dev/null || true
+}
+
+# --- lifecycle -------------------------------------------------------------
+
+session_running() { waydroid status 2>/dev/null | grep -qi 'Session:[[:space:]]*RUNNING'; }
+
+cmd_start() {
+  dd_require_binder
+  dd_have_bundle || dd_die "not installed; run 'deckdroid install'"
+  if session_running; then dd_info "already running"; return 0; fi
+
+  dd_info "starting container"
+  as_root container-start >"$DECKDROID_ROOT/container.log" 2>&1 &
+  # Wait for the container manager to claim its dbus name.
+  local i
+  for i in $(seq 1 60); do
+    waydroid status >/dev/null 2>&1 && break
+    sleep 0.5
+  done
+
+  dd_info "starting session"
+  waydroid session start >"$DECKDROID_ROOT/session.log" 2>&1 &
+  for i in $(seq 1 60); do
+    session_running && break
+    sleep 0.5
+  done
+  session_running || dd_die "session did not come up; see $DECKDROID_ROOT/session.log"
+  dd_info "running"
+}
+
+cmd_stop() {
+  waydroid session stop 2>/dev/null || true
+  as_root container-stop
+  dd_info "stopped"
+}
+
+cmd_status() {
+  printf 'install:   %s\n' "$DECKDROID_ROOT"
+  printf 'bundle:    %s\n' "$(dd_have_bundle && echo present || echo MISSING)"
+  printf 'image:     %s\n' "$([ -f "$DD_IMAGE" ] && du -h --apparent-size "$DD_IMAGE" | cut -f1 || echo MISSING)"
+  printf 'disk used: %s\n' "$([ -f "$DD_IMAGE" ] && du -h "$DD_IMAGE" | cut -f1 || echo -)"
+  printf 'binder:    %s\n' "$(awk '$2=="binder"{f=1} END{print f?"yes":"no"}' /proc/filesystems)"
+  printf 'session:   %s\n' "$(session_running && echo running || echo stopped)"
+}
+
+# --- apps ------------------------------------------------------------------
+
+cmd_launch() {
+  local pkg=${1:-}
+  [ -n "$pkg" ] || dd_die "usage: deckdroid launch <package>"
+  cmd_start
+  dd_info "launching $pkg"
+  # cage gives the app its own Wayland compositor, which is what lets a
+  # non-Steam shortcut behave like a normal game in Game Mode.
+  cage -- waydroid app launch "$pkg" || true
+  # The shortcut's lifetime is the app's: shut down when the window closes so a
+  # backgrounded Android does not eat memory during the next game.
+  if [ "${DECKDROID_KEEP_RUNNING:-0}" != "1" ]; then cmd_stop; fi
+}
+
+cmd_app() {
+  cmd_start
+  case "${1:-}" in
+    install) shift; waydroid app install "$@" ;;
+    remove) shift; waydroid app remove "$@" ;;
+    list) waydroid app list ;;
+    *) dd_die "usage: deckdroid app {install <apk>|remove <pkg>|list}" ;;
+  esac
+}
+
+cmd_doctor() {
+  printf 'kernel:    %s\n' "$(uname -r)"
+  printf 'steamos:   %s\n' "$(. /etc/os-release; echo "$VERSION_ID")"
+  printf 'binder:    %s\n' "$(awk '$2=="binder"{f=1} END{print f?"built in (good)":"ABSENT - waydroid cannot run"}' /proc/filesystems)"
+  printf 'bundle:    %s\n' "$(dd_have_bundle && echo ok || echo missing)"
+  [ -f "$DD_BUNDLE/BUNDLE-INFO" ] && sed 's/^/           /' "$DD_BUNDLE/BUNDLE-INFO"
+  printf 'sudoers:   %s\n' "$([ -f /etc/sudoers.d/deckdroid ] && echo installed || echo missing)"
+  printf 'dbus:      %s\n' "$([ -f /etc/dbus-1/system.d/id.waydro.Container.conf ] && echo installed || echo missing)"
+  if dd_have_bundle; then
+    printf 'waydroid:  %s\n' "$(waydroid --version 2>&1 | head -1)"
+  fi
+}
+
+case "${1:-}" in
+  install) shift; cmd_install "$@" ;;
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  restart) cmd_stop; cmd_start ;;
+  status) cmd_status ;;
+  launch) shift; cmd_launch "$@" ;;
+  app) shift; cmd_app "$@" ;;
+  shortcuts) shift; exec "$(dirname "$(realpath "$0")")/deckdroid-shortcuts" "$@" ;;
+  doctor) cmd_doctor ;;
+  ui) cmd_start; cage -- waydroid show-full-ui ;;
+  *)
+    cat <<USAGE
+deckdroid - Waydroid on the Steam Deck, installed wherever you want
+
+  install [--root DIR] [--size 32G]   download and set up
+  start | stop | restart | status     manage the service
+  ui                                  full Android UI
+  launch <package>                    run one app, stop when it exits
+  app install <apk> | remove | list   manage apps
+  shortcuts sync                      add a Steam entry per installed app
+  doctor                              diagnose
+USAGE
+    ;;
+esac

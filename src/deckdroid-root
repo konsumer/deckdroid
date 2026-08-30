@@ -1,0 +1,79 @@
+#!/bin/bash
+# Privileged half of deckdroid. Everything needing root lives here so the
+# sudoers grant can name exactly one file.
+#
+# Deliberately small: mount the data image over /var/lib/waydroid, run the
+# container manager, and undo both. No package installs, no rootfs writes.
+set -euo pipefail
+
+. /usr/local/lib/deckdroid/deckdroid-env 2>/dev/null \
+  || . "$(dirname "$(realpath "$0")")/deckdroid-env"
+
+[ "$(id -u)" -eq 0 ] || dd_die "deckdroid-root must run as root"
+
+# /var is a 230M A/B partition on the Deck, so the Android data set cannot live
+# there. It goes in an ext4 image under the user's chosen directory, loop-mounted
+# onto the path waydroid hardcodes. This is also what makes the SD card work
+# regardless of the filesystem the user formatted it with.
+mount_work() {
+  dd_mounted && return 0
+  [ -f "$DD_IMAGE" ] || dd_die "no data image at $DD_IMAGE (run 'deckdroid install')"
+  mkdir -p "$DD_WORK"
+  local dev
+  dev=$(losetup --find --show "$DD_IMAGE")
+  if ! mount "$dev" "$DD_WORK"; then
+    losetup -d "$dev"
+    dd_die "could not mount $DD_IMAGE"
+  fi
+  dd_info "mounted $DD_IMAGE -> $DD_WORK"
+}
+
+umount_work() {
+  dd_mounted || return 0
+  umount "$DD_WORK" || dd_die "could not unmount $DD_WORK (something still using it?)"
+  # Release whichever loop device backed it.
+  losetup -j "$DD_IMAGE" | cut -d: -f1 | while read -r dev; do losetup -d "$dev"; done
+  dd_info "unmounted $DD_WORK"
+}
+
+# Android expects far more pids than SteamOS's default allows.
+raise_pid_max() {
+  mkdir -p "$DD_STATE"
+  [ -f "$DD_STATE/pid_max" ] || sysctl -n kernel.pid_max > "$DD_STATE/pid_max"
+  sysctl -q -w kernel.pid_max=200000
+}
+
+restore_pid_max() {
+  [ -f "$DD_STATE/pid_max" ] || return 0
+  sysctl -q -w "kernel.pid_max=$(cat "$DD_STATE/pid_max")"
+  rm -f "$DD_STATE/pid_max"
+}
+
+case "${1:-}" in
+  mount) mount_work ;;
+  umount) umount_work ;;
+  container-start)
+    dd_require_binder
+    mount_work
+    raise_pid_max
+    # Runs in the foreground; the caller backgrounds it and waits on the socket.
+    exec waydroid container start
+    ;;
+  container-stop)
+    waydroid container stop || true
+    restore_pid_max
+    umount_work
+    ;;
+  init)
+    shift
+    dd_require_binder
+    mount_work
+    exec waydroid init "$@"
+    ;;
+  status)
+    printf 'mounted=%s\n' "$(dd_mounted && echo yes || echo no)"
+    printf 'binder=%s\n' "$(awk '$2=="binder"{f=1} END{print f?"yes":"no"}' /proc/filesystems)"
+    printf 'container=%s\n' "$(waydroid status 2>/dev/null | awk -F':[ \t]*' '/Session/{print $2}' || echo unknown)"
+    ;;
+  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-stop|init|status}" ;;
+esac

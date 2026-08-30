@@ -1,0 +1,66 @@
+name: build-bundle
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests
+        run: python3 tests/test_shortcuts.py
+
+      - name: Shell syntax
+        run: |
+          for f in src/deckdroid src/deckdroid-root src/deckdroid-env install.sh build/*.sh; do
+            bash -n "$f" && echo "ok $f"
+          done
+
+      - name: Build SteamOS-matched image
+        run: docker build -t deckdroid-build -f build/Dockerfile build/
+
+      - name: Build bundle
+        run: |
+          mkdir -p out
+          docker run --rm \
+            -v "$PWD/build:/work/build:ro" \
+            -v "$PWD/out:/out" \
+            deckdroid-build \
+            bash /work/build/build-bundle.sh
+
+      - name: Verify the bundle is actually relocatable
+        run: bash build/verify-bundle.sh out/deckdroid-bundle-x86_64.tar.gz
+
+      - name: Package launcher scripts
+        run: tar -C src -czf out/deckdroid-tools.tar.gz .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deckdroid-bundle
+          path: out/*
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        run: gh release upload "${{ github.event.release.tag_name }}" out/* --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Publish rolling 'latest' release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest out/* \
+            --title "Latest bundle" \
+            --notes "Rolling build of the Waydroid bundle from $GITHUB_SHA."
+        env:
+          GH_TOKEN: ${{ github.token }}

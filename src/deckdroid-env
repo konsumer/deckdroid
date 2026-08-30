@@ -1,0 +1,49 @@
+#!/bin/bash
+# Sourced by every deckdroid entrypoint. Resolves the install location and puts
+# the relocated bundle ahead of the system on all three lookup paths.
+#
+# Nothing here writes to the rootfs: the bundle can live on any filesystem the
+# user picked, including the SD card.
+
+# Install location, in precedence order: explicit env, user config, default.
+if [ -z "${DECKDROID_ROOT:-}" ]; then
+  _cfg=${XDG_CONFIG_HOME:-$HOME/.config}/deckdroid/config
+  # When running under sudo, read the invoking user's config, not root's.
+  if [ -n "${SUDO_USER:-}" ]; then
+    _home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+    _cfg=$_home/.config/deckdroid/config
+  fi
+  # shellcheck disable=SC1090
+  [ -r "$_cfg" ] && . "$_cfg"
+fi
+DECKDROID_ROOT=${DECKDROID_ROOT:-$HOME/Android_Waydroid}
+
+DD_BUNDLE=$DECKDROID_ROOT/bundle
+DD_IMAGE=$DECKDROID_ROOT/data.img
+DD_WORK=/var/lib/waydroid          # waydroid's fixed work dir; we mount onto it
+DD_STATE=/run/deckdroid
+
+export DECKDROID_ROOT DD_BUNDLE DD_IMAGE DD_WORK DD_STATE
+
+export PATH=$DD_BUNDLE/usr/bin:$PATH
+export LD_LIBRARY_PATH=$DD_BUNDLE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export PYTHONPATH=$DD_BUNDLE/usr/lib/waydroid${PYTHONPATH:+:$PYTHONPATH}
+
+dd_die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+dd_info() { printf '\033[1;36m::\033[0m %s\n' "$*"; }
+dd_warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$*" >&2; }
+
+# The whole project rests on the kernel having binder. SteamOS 3.8.16 (6.16)
+# builds it in; 6.11, 6.18 and 7.2 do not. Say so plainly rather than letting
+# waydroid fail somewhere deeper.
+dd_require_binder() {
+  if ! awk '$2 == "binder" { found = 1 } END { exit !found }' /proc/filesystems; then
+    dd_die "this kernel has no binder support.
+  running: $(uname -r)
+  SteamOS 3.8.16 (kernel 6.16) has binder built in; 6.11, 6.18 and 7.2 do not.
+  Check for a SteamOS update, or see docs/kernels.md."
+  fi
+}
+
+dd_have_bundle() { [ -x "$DD_BUNDLE/usr/bin/waydroid" ]; }
+dd_mounted() { mountpoint -q "$DD_WORK"; }

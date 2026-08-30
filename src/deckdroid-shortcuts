@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""Mirror installed Android apps into Steam as non-Steam shortcuts.
+
+Waydroid already writes a .desktop file and a PNG icon for every app that has a
+LAUNCHER intent, so we reuse those rather than digging icons out of APKs. Each
+shortcut runs `deckdroid launch <package>`, which starts the service if it is
+down and stops it when the app exits.
+
+shortcuts.vdf is binary VDF. We parse the existing file and merge, so shortcuts
+the user added by hand are preserved; ours are tagged and can be removed again.
+"""
+
+import os
+import re
+import shutil
+import struct
+import sys
+import zlib
+from pathlib import Path
+
+TAG = 'deckdroid'
+MAP, STR, INT, END = 0x00, 0x01, 0x02, 0x08
+
+
+# --- binary vdf ------------------------------------------------------------
+
+def _cstr(buf, i):
+  j = buf.index(b'\x00', i)
+  return buf[i:j].decode('utf-8', 'replace'), j + 1
+
+
+def vdf_load(buf):
+  """Parse binary VDF into nested dicts, preserving key order."""
+  def parse(i):
+    out = {}
+    while True:
+      t = buf[i]; i += 1
+      if t == END:
+        return out, i
+      key, i = _cstr(buf, i)
+      if t == MAP:
+        out[key], i = parse(i)
+      elif t == STR:
+        out[key], i = _cstr(buf, i)
+      elif t == INT:
+        out[key] = struct.unpack('<i', buf[i:i + 4])[0]; i += 4
+      else:
+        raise ValueError(f'unknown vdf type {t:#x} at {i}')
+  root, _ = parse(0)
+  return root
+
+
+def vdf_dump(obj):
+  out = bytearray()
+  def emit(d):
+    for k, v in d.items():
+      key = k.encode('utf-8') + b'\x00'
+      if isinstance(v, dict):
+        out.append(MAP); out.extend(key); emit(v); out.append(END)
+      elif isinstance(v, bool):
+        out.append(INT); out.extend(key); out.extend(struct.pack('<i', int(v)))
+      elif isinstance(v, int):
+        out.append(INT); out.extend(key); out.extend(struct.pack('<i', v))
+      else:
+        out.append(STR); out.extend(key); out.extend(str(v).encode('utf-8') + b'\x00')
+  emit(obj)
+  out.append(END)
+  return bytes(out)
+
+
+def shortcut_appid(exe, name):
+  """Steam's id for a non-Steam shortcut, used to name its artwork."""
+  crc = zlib.crc32(exe.encode('utf-8') + name.encode('utf-8')) & 0xffffffff
+  return crc | 0x80000000
+
+
+# --- discovery -------------------------------------------------------------
+
+def steam_user_dirs():
+  roots = [Path.home() / '.local/share/Steam', Path.home() / '.steam/steam',
+           Path.home() / '.steam/root']
+  seen = set()
+  for root in roots:
+    userdata = root / 'userdata'
+    if not userdata.is_dir():
+      continue
+    for d in sorted(userdata.iterdir()):
+      cfg = d / 'config'
+      if d.name.isdigit() and d.name != '0' and cfg.is_dir():
+        real = cfg.resolve()
+        if real not in seen:
+          seen.add(real)
+          yield cfg
+
+
+def desktop_entries():
+  """Read waydroid's generated .desktop files -> (package, name, icon)."""
+  apps = Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local/share')) / 'applications'
+  for path in sorted(apps.glob('waydroid.*.desktop')):
+    text = path.read_text(errors='replace')
+    body = text.split('[Desktop Action')[0]
+    if re.search(r'^NoDisplay\s*=\s*true', body, re.M | re.I):
+      continue
+    def field(key):
+      m = re.search(rf'^{key}\s*=\s*(.+)$', body, re.M)
+      return m.group(1).strip() if m else None
+    exec_line = field('Exec') or ''
+    m = re.search(r'app launch\s+(\S+)', exec_line)
+    package = m.group(1) if m else path.name[len('waydroid.'):-len('.desktop')]
+    yield package, (field('Name') or package), field('Icon')
+
+
+# --- artwork ---------------------------------------------------------------
+
+def install_art(grid, appid, icon):
+  """Give the entry a library image so it is not a blank tile."""
+  if not icon or not Path(icon).is_file():
+    return None
+  grid.mkdir(parents=True, exist_ok=True)
+  target = grid / f'{appid}_icon.png'
+  shutil.copyfile(icon, target)
+  # Steam looks for these names for the library capsule and grid tile.
+  for name in (f'{appid}.png', f'{appid}p.png'):
+    shutil.copyfile(icon, grid / name)
+  return str(target)
+
+
+# --- sync ------------------------------------------------------------------
+
+def build_entry(launcher, package, name, icon_path):
+  exe = f'"{launcher}"'
+  return {
+    'appid': struct.unpack('<i', struct.pack('<I', shortcut_appid(exe, name)))[0],
+    'AppName': name,
+    'Exe': exe,
+    'StartDir': f'"{Path(launcher).parent}"',
+    'icon': icon_path or '',
+    'ShortcutPath': '',
+    'LaunchOptions': f'launch {package}',
+    'IsHidden': 0,
+    'AllowDesktopConfig': 1,
+    'AllowOverlay': 1,
+    'OpenVR': 0,
+    'Devkit': 0,
+    'DevkitGameID': '',
+    'DevkitOverrideAppID': 0,
+    'LastPlayTime': 0,
+    'FlatpakAppID': '',
+    'tags': {'0': TAG},
+  }
+
+
+def sync(remove=False):
+  launcher = str(Path(__file__).resolve().parent / 'deckdroid')
+  apps = list(desktop_entries())
+  if not apps and not remove:
+    print('No Android apps found.\n'
+          'Start waydroid at least once so it can generate desktop entries:\n'
+          '  deckdroid start', file=sys.stderr)
+    return 1
+
+  configs = list(steam_user_dirs())
+  if not configs:
+    print('No Steam user directory found.', file=sys.stderr)
+    return 1
+
+  for cfg in configs:
+    path = cfg / 'shortcuts.vdf'
+    root = {}
+    if path.exists():
+      try:
+        root = vdf_load(path.read_bytes())
+      except Exception as e:
+        print(f'{path}: unreadable ({e}); refusing to overwrite', file=sys.stderr)
+        continue
+    shortcuts = root.get('shortcuts', {})
+
+    # Drop our previous entries; anything the user made by hand stays.
+    kept = [v for v in shortcuts.values()
+            if TAG not in (v.get('tags') or {}).values()]
+
+    added = []
+    if not remove:
+      grid = cfg / 'grid'
+      for package, name, icon in apps:
+        entry = build_entry(launcher, package, name, None)
+        art = install_art(grid, shortcut_appid(entry['Exe'], name), icon)
+        entry['icon'] = art or ''
+        added.append(entry)
+
+    merged = kept + added
+    root['shortcuts'] = {str(i): v for i, v in enumerate(merged)}
+
+    if path.exists():
+      backup = path.with_suffix('.vdf.deckdroid-backup')
+      if not backup.exists():
+        shutil.copyfile(path, backup)
+    path.write_bytes(vdf_dump(root))
+    action = 'removed' if remove else f'wrote {len(added)}'
+    print(f'{path}: {action} deckdroid shortcuts ({len(kept)} others untouched)')
+
+  print('\nRestart Steam to see the changes.')
+  return 0
+
+
+if __name__ == '__main__':
+  cmd = sys.argv[1] if len(sys.argv) > 1 else 'sync'
+  if cmd == 'sync':
+    sys.exit(sync())
+  if cmd == 'remove':
+    sys.exit(sync(remove=True))
+  print('usage: deckdroid shortcuts {sync|remove}', file=sys.stderr)
+  sys.exit(2)
