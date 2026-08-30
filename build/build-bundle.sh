@@ -62,6 +62,9 @@ printf '%s\n' "${kept[@]}" > "$STAGE/bundled-packages.txt"
 msg "Copying their files into the bundle"
 for pkg in "${kept[@]}"; do
   while read -r f; do
+    # pacman -Ql prints paths prefixed with the alternate root; strip it so the
+    # patterns below see the real /usr/... path.
+    f=${f#"$PKGROOT"}
     case "$f" in
       */) continue ;;                                  # directory entry
       /usr/share/man/*|/usr/share/doc/*|/usr/share/info/*|/usr/share/locale/*) continue ;;
