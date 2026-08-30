@@ -301,6 +301,19 @@ cmd_run_app() {
     done
   fi
 
+  # Start the session. Android's surfaces go to whatever display the session
+  # was started on, which is why this has to happen in here, inside the
+  # compositor, and after the window has been sized.
+  waydroid session start >>"$DECKDROID_ROOT/session.log" 2>&1 &
+  for i in $(seq 1 120); do
+    session_running && break
+    sleep 0.5
+  done
+  session_running || {
+    dd_warn "session did not start; see $DECKDROID_ROOT/session.log"
+    return 1
+  }
+
   # multi_windows is a *persisted* Android property living in the data image,
   # so it outranks anything written to waydroid_base.prop. It also has to be
   # set as the session user: over sudo, waydroid cannot see the session at all
@@ -442,7 +455,7 @@ cmd_launch() {
   # cost the right resolution, never the launch.
   if [ -n "${DECKDROID_OUTER_DISPLAY:-}" ]; then
     local geom gw gh wid
-    geom=$( { xdpyinfo 2>/dev/null || true; } | awk '/dimensions:/ {print $2; exit}' )
+    geom=$( { timeout 5 xdpyinfo 2>/dev/null || true; } | awk '/dimensions:/ {print $2; exit}' )
     gw=${geom%x*}; gh=${geom#*x}
     case "${gw:-}:${gh:-}" in *[!0-9:]*|:*|*:) gw=""; gh="" ;; esac
     if [ -n "$gw" ]; then
@@ -452,15 +465,22 @@ cmd_launch() {
       # it, so read the id from there. Before Android connects the title is
       # "wlroots - X11-<n>"; it becomes "Waydroid" afterwards, and we resize
       # before the session starts.
+      # Two traps here, both of which killed this script silently before:
+      #   * grep exits 1 when it matches nothing, and under `set -e` with
+      #     `pipefail` that aborts the whole launcher -- on the first pass the
+      #     window does not exist yet, so it aborted every single time. The
+      #     trailing `|| wid=""` is what makes the loop a loop.
+      #   * xwininfo can block in this environment, so it gets a timeout.
+      wid=""
       for i in $(seq 1 40); do
-        wid=$( { xwininfo -root -children 2>/dev/null || true; } \
-               | grep -oE '0x[0-9a-f]+ "(wlroots|Waydroid)[^"]*"' \
-               | grep -oE '^0x[0-9a-f]+' | tail -1 )
+        wid=$(timeout 5 xwininfo -root -children 2>/dev/null \
+              | grep -oE '0x[0-9a-f]+ "(wlroots|Waydroid)[^"]*"' \
+              | grep -oE '^0x[0-9a-f]+' | tail -1) || wid=""
         [ -n "$wid" ] && break
         sleep 0.5
       done
       if [ -n "${wid:-}" ]; then
-        xdotool windowsize "$wid" "$gw" "$gh" 2>/dev/null || true
+        timeout 5 xdotool windowsize "$wid" "$gw" "$gh" 2>/dev/null || true
         dd_info "sized compositor window to ${gw}x${gh}"
       else
         dd_warn "could not find the compositor window; Android may be letterboxed"
