@@ -86,6 +86,10 @@ cmd_install() {
   fi
 
   dd_info "installed. 'deckdroid start' to run it."
+  case $flavor in
+    tv*) dd_info "TV build: run 'deckdroid keymap' once it is running, so a
+  controller can navigate it (Back and Home are otherwise unreachable)." ;;
+  esac
 }
 
 # The only two things that touch system directories. Both live in /etc, which

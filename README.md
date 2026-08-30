@@ -142,6 +142,35 @@ without it, and with its window tagged `STEAM_GAME` (verified applied); a bare
 WSI Vulkan layer conflict (a modal error dialog that blocked rendering) and
 `gamescopereaper`, which kills its parent's entire process group.
 
+## Controller navigation on TV builds
+
+Android TV interfaces are driven entirely by a D-pad — they have no on-screen
+navigation bar and leanback UIs ignore the mouse by design. Arrows and Enter
+already reach Android as D-pad and select, but **Back and Home do not**:
+Android's `Generic.kl` binds them to Linux key codes `158` and `172`, which no
+keyboard has, so Steam Input cannot send them.
+
+`deckdroid keymap` overlays the key layout to put those actions on keys Steam
+Input *can* send, then restarts the session:
+
+```
+Esc -> BACK      F1 -> HOME      F2 -> APP_SWITCH      F3 -> MENU
+```
+
+Then bind, per shortcut (Controller icon → Edit Layout):
+
+| Controller | Key | Does |
+| ---------- | --- | ---- |
+| D-pad / left stick | Arrow keys | navigate |
+| A | Enter | select |
+| B | Escape | back |
+| Y | F1 | home |
+| Select | F2 | recent apps |
+| Start | F3 | menu |
+
+The overlay lives in the data image, so it survives restarts but not
+`reinit --wipe`; re-run `deckdroid keymap` after wiping.
+
 ## Known issues
 
 - **Steam's on-screen keyboard still appears** for the shortcut on some
