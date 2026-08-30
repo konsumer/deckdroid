@@ -191,6 +191,9 @@ case "${1:-}" in
       >/dev/null 2>&1 || true
     exit 0
     ;;
+  boot-completed)
+    waydroid shell -- getprop sys.boot_completed 2>/dev/null | tr -d "\r\n" | grep -q "^1$"
+    ;;
   app-foreground)
     # True when the package owns the foreground activity.
     shift
@@ -217,5 +220,5 @@ case "${1:-}" in
     printf 'binder=%s\n' "$(awk '$2=="binder"{f=1} END{print f?"yes":"no"}' /proc/filesystems)"
     printf 'container=%s\n' "$(waydroid status 2>/dev/null | awk -F':[ \t]*' '/Session/{print $2}' || echo unknown)"
     ;;
-  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|wait-app|app-start|app-foreground|kill-helpers|clean-bundle|firewall|init|status}" ;;
+  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|wait-app|app-start|app-foreground|boot-completed|kill-helpers|clean-bundle|firewall|init|status}" ;;
 esac
