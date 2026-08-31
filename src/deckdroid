@@ -686,6 +686,39 @@ Arrows and Enter already work; the rest need this overlay.
 MAP
 }
 
+# Play Store refuses to sign in on a device Google has not seen before. This
+# prints the ID it wants and where to put it.
+cmd_gapps() {
+  session_running || dd_die "not running; 'deckdroid start' first"
+  local id
+  id=$(as_root gapps-id 2>/dev/null || true)
+  case "${id:-}" in
+    ''|*[!0-9]*)
+      dd_die "no Google Services device ID found.
+  This image has no GApps. Switch to one that does:
+    deckdroid images --flavor tv-gapps --force && deckdroid reinit --wipe" ;;
+  esac
+  cat <<EOF
+
+Google Services device ID:  $id
+
+  1. Open  https://www.google.com/android/uncertified
+  2. Sign in and register that ID
+  3. Wait a few minutes, then:  deckdroid gapps --reset
+  4. Open the Play Store in Android and sign in
+
+Until the ID is registered, Play sign-in fails with a device-not-certified
+error, which is expected rather than broken.
+EOF
+  [ "${1:-}" = "--reset" ] && {
+    dd_info "clearing Play services state so it re-registers"
+    as_root app-clear com.google.android.gms || true
+    as_root app-clear com.android.vending || true
+    dd_info "done; open the Play Store and sign in"
+  }
+  return 0
+}
+
 cmd_doctor() {
   printf 'kernel:    %s\n' "$(uname -r)"
   printf 'steamos:   %s\n' "$(. /etc/os-release; echo "$VERSION_ID")"
@@ -706,6 +739,7 @@ case "${1:-}" in
   images) shift; cmd_images "$@" ;;
   reinit) shift; cmd_reinit "$@" ;;
   keymap) cmd_keymap ;;
+  gapps) shift; cmd_gapps "$@" ;;
   start) cmd_start ;;
   stop) cmd_stop ;;
   restart) cmd_stop; cmd_start ;;
@@ -736,6 +770,7 @@ deckdroid - Waydroid on the Steam Deck, installed wherever you want
   refresh                             regenerate app icons and desktop entries
   shortcuts sync                      add a Steam entry per installed app
   keymap                              make a TV build controller-navigable
+  gapps [--reset]                     Play Store device registration
   kill                                force-stop a stuck launch
   doctor                              diagnose
 USAGE
