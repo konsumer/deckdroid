@@ -20,8 +20,8 @@ translation, Widevine L3 and VA-API — all of which matter more on a TV build
 than the stock phone images.
 
 ```bash
-deckdroid install --flavor tv          # Android TV, no GApps (default)
-deckdroid install --flavor tv-gapps    # Android TV with GApps preinstalled
+deckdroid install --flavor tv-gapps    # Android TV with GApps (default)
+deckdroid install --flavor tv           # Android TV, no GApps
 deckdroid install --flavor lineage     # stock phone LineageOS from waydroid's OTA
 ```
 
@@ -33,6 +33,14 @@ deckdroid reinit --wipe                # data from another build rarely survives
 ```
 
 Assets are checksummed against the release's published sha256 either way.
+
+GApps is the default because the Play Store is how most TV apps get installed.
+A device Google has not seen before cannot sign in, so register it once:
+
+```bash
+deckdroid gapps            # prints the device ID and what to do with it
+deckdroid gapps --reset    # after registering, clears Play state so it retries
+```
 
 ## Install
 

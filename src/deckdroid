@@ -26,7 +26,7 @@ dd_require_sudo() {
 # --- install ---------------------------------------------------------------
 
 cmd_install() {
-  local size=32G target=$DECKDROID_ROOT local_bundle= flavor=${DECKDROID_FLAVOR:-tv}
+  local size=32G target=$DECKDROID_ROOT local_bundle= flavor=${DECKDROID_FLAVOR:-tv-gapps}
   while [ $# -gt 0 ]; do
     case $1 in
       --root) target=$2; shift 2 ;;
@@ -194,7 +194,7 @@ fetch_one() { # url file sha256 size dest.img
 }
 
 cmd_images() {
-  local flavor=${DECKDROID_FLAVOR:-tv} force=0
+  local flavor=${DECKDROID_FLAVOR:-tv-gapps} force=0
   while [ $# -gt 0 ]; do
     case $1 in
       --flavor) flavor=$2; shift 2 ;;
