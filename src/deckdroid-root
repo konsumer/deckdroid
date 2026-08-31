@@ -213,6 +213,9 @@ case "${1:-}" in
     waydroid shell -- dumpsys activity activities 2>/dev/null \
       | grep -a "topResumedActivity" | grep -q "$pkg"
     ;;
+  gapps-present)
+    waydroid shell -- pm list packages 2>/dev/null | grep -q "com.android.vending"
+    ;;
   gapps-id)
     # The Google Services Framework device ID. Play Store sign-in fails on an
     # unregistered device, and this is the number Google asks for.
@@ -272,5 +275,5 @@ case "${1:-}" in
     printf 'binder=%s\n' "$(awk '$2=="binder"{f=1} END{print f?"yes":"no"}' /proc/filesystems)"
     printf 'container=%s\n' "$(waydroid status 2>/dev/null | awk -F':[ \t]*' '/Session/{print $2}' || echo unknown)"
     ;;
-  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|wait-app|app-start|app-foreground|boot-completed|keymap|gapps-id|app-clear|kill-helpers|clean-bundle|firewall|init|status}" ;;
+  *) dd_die "usage: deckdroid-root {mount|umount|container-start|container-run|container-stop|wait-app|app-start|app-foreground|boot-completed|keymap|gapps-id|gapps-present|app-clear|kill-helpers|clean-bundle|firewall|init|status}" ;;
 esac

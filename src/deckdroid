@@ -690,13 +690,31 @@ MAP
 # prints the ID it wants and where to put it.
 cmd_gapps() {
   session_running || dd_die "not running; 'deckdroid start' first"
+  if ! as_root gapps-present 2>/dev/null; then
+    dd_die "this image has no Play Store. Switch to one that has it:
+    deckdroid images --flavor tv-gapps --force && deckdroid reinit --wipe"
+  fi
+
   local id
   id=$(as_root gapps-id 2>/dev/null || true)
   case "${id:-}" in
     ''|*[!0-9]*)
-      dd_die "no Google Services device ID found.
-  This image has no GApps. Switch to one that does:
-    deckdroid images --flavor tv-gapps --force && deckdroid reinit --wipe" ;;
+      # GApps is installed but Google Play services has not checked in yet, so
+      # no device ID exists. Checkin is normally triggered by the first sign-in
+      # attempt, not by boot -- so this is a "do this next", not an error.
+      cat <<'WAIT'
+
+Play Store is installed, but Google has not issued a device ID yet.
+It appears only after Play services first talks to Google:
+
+  1. Launch the "Android TV" shortcut
+  2. Open the Play Store and start signing in
+     (it will refuse: "device is not Play Protect certified" -- expected)
+  3. Come back and run:  deckdroid gapps
+
+That second run will print the ID to register.
+WAIT
+      return 0 ;;
   esac
   cat <<EOF
 
