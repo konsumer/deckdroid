@@ -179,6 +179,39 @@ Then bind, per shortcut (Controller icon → Edit Layout):
 The overlay lives in the data image, so it survives restarts but not
 `reinit --wipe`; re-run `deckdroid keymap` after wiping.
 
+## Streaming and DRM
+
+The TV images ship Widevine **L3**, and it works — a license request logs the
+CDM describing itself accurately:
+
+```json
+{"soc_model":"X86 64 bit","tee_os":"none","form_factor":"L3","fused":false}
+```
+
+L3 means decryption happens in software, so there is no hardware-backed secure
+video path. That divides streaming apps in two:
+
+- **Works:** regular YouTube, and anything that accepts software decode.
+- **Does not work:** YouTube TV. It requests
+  `use_hw_secure_codecs=1` and then a decoder with `FEATURE_SecurePlayback`;
+  no such decoder exists (or can exist) here, so the player fails with
+  `Failed to find decoder: video/x-vnd.on2.vp9, mustSupportSecure: 1` and you
+  get a spinner over a black screen while the app itself works fine. Its
+  unencrypted ads play, which makes the failure look intermittent.
+- **Netflix** does not appear in the Play Store on an uncertified L3 device.
+  It can be sideloaded (`deckdroid app install`), but expect SD at best.
+
+This is not fixable from configuration. Widevine L1 requires hardware-backed
+DRM that a container cannot provide — the WayDroid-ATV maintainer states it is
+[impossible on generic x86](https://github.com/WayDroid-ATV/waydroid-androidtv-builds/issues/11),
+Chromebooks included. Declaring fake `.secure` variants of the software
+decoders was tried and rejected by the framework: the error does not change.
+
+`casualsnek/waydroid_script` is not needed here. It adds GApps, Widevine L3
+and libhoudini, all of which the TV images already contain, and its payloads
+target Android 11/13 while these builds are Android 16. It remains the right
+tool for the `lineage` flavor, or for extras like Magisk.
+
 ## Known issues
 
 - **Steam's on-screen keyboard still appears** for the shortcut on some
